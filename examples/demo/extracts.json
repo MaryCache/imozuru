@@ -1,0 +1,33 @@
+{
+  "title": "影を2色で塗る順番（手本）",
+  "question": "影を2色で塗るとき、暗い色と明るい色のどちらを先に置くとよいか",
+  "stopped": "要る主張の全部に原文の場所が付いた（手本なので原文は2本だけ）",
+  "claims": [
+    {
+      "claim": "暗い色を先に置くと境目が濁りにくい",
+      "status": "付いた",
+      "note": "個人の記録と論文の両方にある。",
+      "quotes": [
+        {"file": "sample-blog.md", "line": 5, "end": 6, "text": "わたしは影を塗るとき、まず一番暗い色を先に置く。 明るい影から置くと、あとで暗い影を重ねたときに境目が濁るからだ。", "mark": "〔本人〕"},
+        {"file": "sample-paper.txt", "line": 6, "end": 8, "text": "In 9 of 12 cases, placing the darkest tone first produced fewer visible seams at layer boundaries.", "ja": "12件中9件で、一番暗い色を先に置くと、レイヤーの境目の継ぎ目が目立ちにくかった。", "mark": "〔論文〕測定あり"}
+      ]
+    },
+    {
+      "claim": "その差が消える条件",
+      "status": "一部だけ",
+      "note": "論文の1文だけ。どれくらいのぼかしで消えるかは書かれていない。",
+      "quotes": [
+        {"file": "sample-paper.txt", "line": 9, "text": "The effect disappeared when layers were blended with a soft brush.", "ja": "レイヤーを柔らかいブラシでなじませると、この差は消えた。", "mark": "〔論文〕"}
+      ]
+    }
+  ],
+  "disagreements": [
+    {
+      "topic": "水彩では順番が逆か",
+      "quotes": [
+        {"file": "sample-blog.md", "line": 10, "end": 11, "text": "ただし水彩の場合は逆で、明るい色から重ねるのが定石だと聞く。 自分は水彩を描かないので、ここは確かめていない。", "who": "見本の記事の書き手（伝聞）"}
+      ]
+    }
+  ],
+  "unreached": ["水彩の塗り順を書き手自身が試した記録（見つからなかった・手本の想定）"]
+}

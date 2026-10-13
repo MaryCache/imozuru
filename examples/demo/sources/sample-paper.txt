@@ -1,0 +1,8 @@
+Sample Paper: Ordering of Shading Layers (demo text written for imozuru)
+
+Abstract
+This is a demonstration text, not a real publication.
+We asked 12 illustrators to shade the same line art in two orders.
+In 9 of 12 cases, placing the darkest tone first produced fewer
+visible seams at layer boundaries.
+The effect disappeared when layers were blended with a soft brush.
