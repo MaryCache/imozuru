@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
@@ -269,12 +270,17 @@ def first_line(text: str) -> str:
     return ""
 
 
-def main() -> int:
-    if len(sys.argv) != 4:
-        print(__doc__, file=sys.stderr)
-        return 2
-    sources, name, url = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-    sources.mkdir(parents=True, exist_ok=True)
+def save_verified(saved: Path, kept: Path, destination: Path) -> Path:
+    """検査を通ったファイルだけを、同じファイルシステム内で保存先に移す。"""
+    if saved != kept:
+        saved.replace(destination / saved.name)
+    target = destination / kept.name
+    kept.replace(target)
+    return target
+
+
+def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
+    """sources は今回の取得専用の一時置き場。取得・変換・検査中は保存済みの原文に触れない。"""
 
     if X_POST.match(url):
         print(f"FAIL\t{name}\tX はログインの壁で本文が取れない（URL を map.md に残す）")
@@ -286,6 +292,7 @@ def main() -> int:
             kept.unlink(missing_ok=True)
             print(f"FAIL\t{name}\t字幕が無いか短すぎる（{len(body)}文字）")
             return 1
+        kept = save_verified(kept, kept, destination)
         print(f"OK\t{name}\t{kept}\t{len(body)}\t{first_line(body)}")
         return 0
 
@@ -356,8 +363,21 @@ def main() -> int:
         print(f"FAIL\t{name}\t{reason}")
         return 1
 
+    kept = save_verified(saved, kept, destination)
     print(f"OK\t{name}\t{kept}\t{len(text)}\t{first_line(text)}")
     return 0
+
+
+def main() -> int:
+    if len(sys.argv) != 4:
+        print(__doc__, file=sys.stderr)
+        return 2
+    sources, name, url = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+    sources.mkdir(parents=True, exist_ok=True)
+    # 変換や FAIL の後始末は一時置き場だけで行う。同名の原文を検査前に上書きしない。
+    # 保存先の中に作るので、成功時の replace はファイルシステムをまたがない。
+    with tempfile.TemporaryDirectory(prefix=".imozuru-fetch-", dir=sources) as tmp:
+        return fetch_source(Path(tmp), name, url, sources)
 
 
 if __name__ == "__main__":
