@@ -16,10 +16,12 @@
     FAIL <name> <理由>
 """
 
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
@@ -270,38 +272,60 @@ def first_line(text: str) -> str:
 
 
 def main() -> int:
+    """取得は作業用のフォルダで行い、検査を通ったファイルだけを sources/ へ移す。
+
+    同じ名前で取り直して失敗したとき、前に取った原文を消さないため。sources/ に直接
+    書いていたころは、上書きしたあと検査で落ちて消していた（issue #1）。原文が消えると
+    map.md の行番号と抜き書きの照合先が無くなる。作業用のフォルダを sources/ の中に作るのは、
+    同じファイルシステムの中なら os.replace で一度に置き換えられるため。
+    """
     if len(sys.argv) != 4:
         print(__doc__, file=sys.stderr)
         return 2
     sources, name, url = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
     sources.mkdir(parents=True, exist_ok=True)
 
+    work = Path(tempfile.mkdtemp(prefix=f".{name}-fetch-", dir=sources))
+    try:
+        result = fetch_into(work, name, url)
+        if isinstance(result, str):
+            print(f"FAIL\t{name}\t{result}")
+            return 1
+        files, text = result
+        for f in files:
+            os.replace(f, sources / f.name)
+        print(f"OK\t{name}\t{sources / files[-1].name}\t{len(text)}\t{first_line(text)}")
+        return 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def fetch_into(work: Path, name: str, url: str) -> tuple[list[Path], str] | str:
+    """work に原文を落として検査する。
+
+    通ったら（sources/ へ移すファイル, 本文）を返す。ファイルは最後が報告に出す本文。
+    落ちたら理由の文字列を返す。work は呼び手が丸ごと消すので、ここでは後始末しない。
+    """
     if X_POST.match(url):
-        print(f"FAIL\t{name}\tX はログインの壁で本文が取れない（URL を map.md に残す）")
-        return 1
+        return "X はログインの壁で本文が取れない（URL を map.md に残す）"
     if YOUTUBE.search(url):
-        kept = sources / f"{name}.md"
+        kept = work / f"{name}.md"
         body = youtube_to_md(url, kept)
         if len(body) < MIN_TRANSCRIPT_CHARS:
-            kept.unlink(missing_ok=True)
-            print(f"FAIL\t{name}\t字幕が無いか短すぎる（{len(body)}文字）")
-            return 1
-        print(f"OK\t{name}\t{kept}\t{len(body)}\t{first_line(body)}")
-        return 0
+            return f"字幕が無いか短すぎる（{len(body)}文字）"
+        return [kept], body
 
     try:
         body, ctype = download(url)
     except Exception as e:  # HTTP エラーも接続失敗も、呼び手にとっては同じ「取れない」
-        print(f"FAIL\t{name}\t{type(e).__name__}: {e}")
-        return 1
+        return f"{type(e).__name__}: {e}"
 
     if not body.strip():
         # 中身の無い 200/202 を返すサーバーがある（Cornell の論文置き場・2026-10-10）。
         # ブラウザでないと中身を渡さないボット対策のことが多い＝ユーザーのブラウザで開いてもらう候補
-        print(f"FAIL\t{name}\t空の応答（ボット対策の可能性・ブラウザで開けば読めるかも）")
-        return 1
+        return "空の応答（ボット対策の可能性・ブラウザで開けば読めるかも）"
     if body[:5] == b"%PDF-":
-        saved = sources / f"{name}.pdf"
+        saved = work / f"{name}.pdf"
         saved.write_bytes(body)
         text = pdf_to_text(saved)
         kept = saved.with_suffix(".txt")
@@ -313,51 +337,41 @@ def main() -> int:
         # HTML の判定より先に見る。先頭が `<!-- AUTO GENERATED -->` の markdown を
         # HTML と見なして ax に回し、改行が全部消えた（chrome-devtools-mcp の tool-reference・2026-10-11）。
         ext = ".json" if "json" in ctype else ".csv" if "csv" in ctype else ".md"
-        kept = saved = sources / f"{name}{ext}"
+        kept = saved = work / f"{name}{ext}"
         text = body.decode("utf-8", errors="replace")
         kept.write_text(text)
     elif "html" in ctype or body.lstrip()[:1] == b"<":
-        kept = sources / f"{name}.md"
+        kept = work / f"{name}.md"
         text = html_to_md(url, kept, body)
         saved = kept
         # HTML のつもりが、ax は転送をたどって PDF 本体を受け取っていた（HAL）。PDF として取り直す
         if text.lstrip().startswith("%PDF"):
-            kept.unlink(missing_ok=True)
-            saved = sources / f"{name}.pdf"
+            saved = work / f"{name}.pdf"
             if ax_save(url, saved) and saved.read_bytes()[:5] == b"%PDF-":
                 text = pdf_to_text(saved)
                 kept = saved.with_suffix(".txt")
                 if len(text.strip()) < 200:
                     text = ocr_pdf(saved)
             else:
-                saved.unlink(missing_ok=True)
-                print(f"FAIL\t{name}\t転送先の PDF を保存できなかった")
-                return 1
+                return "転送先の PDF を保存できなかった"
     else:
-        print(f"FAIL\t{name}\t扱えない形式: {ctype or '不明'}")
-        return 1
+        return f"扱えない形式: {ctype or '不明'}"
 
     # arXiv の PDF は pdftotext で本文が0文字になることがある（2026-10-09 の試しで
     # COLE・Accordion）。同じ論文の HTML 版なら取れたので、短いときだけ切り替える。
     arxiv_id = re.search(r"arxiv\.org/(?:pdf|abs)/(\d{4}\.\d{4,5}(?:v\d+)?)", url)
     if arxiv_id and len(text) < MIN_TEXT_CHARS:
-        for p in (saved, kept):
-            p.unlink(missing_ok=True)
-        kept = saved = sources / f"{name}.md"
+        kept = saved = work / f"{name}.md"
         text = html_to_md(f"https://arxiv.org/html/{arxiv_id.group(1)}", kept)
 
     floor = MIN_TEXT_CHARS if saved.suffix == ".pdf" else MIN_HTML_CHARS
     head = text[:4000].lower()
     wall = next((p for p in WALL_PATTERNS if p in head), None)
     if len(text) < floor or (wall and len(text) < MIN_TEXT_CHARS * 4):
-        for p in (saved, kept):
-            p.unlink(missing_ok=True)
-        reason = f"壁に当たった（{wall}）" if wall else f"本文が短すぎる（{len(text)}文字）"
-        print(f"FAIL\t{name}\t{reason}")
-        return 1
+        return f"壁に当たった（{wall}）" if wall else f"本文が短すぎる（{len(text)}文字）"
 
-    print(f"OK\t{name}\t{kept}\t{len(text)}\t{first_line(text)}")
-    return 0
+    # PDF なら .pdf と .txt の両方を移す。同じファイルを2回移さないように1つにまとめる
+    return list(dict.fromkeys((saved, kept))), text
 
 
 if __name__ == "__main__":
