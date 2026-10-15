@@ -56,7 +56,7 @@ class FetchPreservationTests(unittest.TestCase):
 
     @staticmethod
     def markdown(text):
-        def convert(url, out, body=None):
+        def convert(url, out, body=None, ctype=""):
             out.write_text(text, encoding="utf-8")
             return text
         return convert

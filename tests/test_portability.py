@@ -138,6 +138,49 @@ class Redirect308Tests(unittest.TestCase):
         self.assertEqual(body, b"moved here")
 
 
+class DecodeTextTests(unittest.TestCase):
+    """Shift_JIS の記事を UTF-8 として読んで中身が U+FFFD になった（pju-hoge さんのフォーク）。"""
+
+    TEXT = "日本語の記事。①髙橋さんの話"  # ①・髙 は Shift_JIS に無く cp932 にある
+
+    def test_content_type_charset(self):
+        body = self.TEXT.encode("cp932")
+        self.assertEqual(fetch.decode_text(body, "text/html; charset=Shift_JIS"), self.TEXT)
+
+    def test_meta_charset(self):
+        body = '<meta charset="euc-jp"><p>日本語の記事</p>'.encode("euc_jp")
+        self.assertIn("日本語の記事", fetch.decode_text(body, "text/html"))
+
+    def test_http_equiv_charset(self):
+        body = ('<meta http-equiv="Content-Type" content="text/html; charset=shift_jis">'
+                + self.TEXT).encode("cp932")
+        self.assertIn(self.TEXT, fetch.decode_text(body, "text/html"))
+
+    def test_undeclared_falls_back_to_japanese(self):
+        self.assertEqual(fetch.decode_text(self.TEXT.encode("cp932"), "text/html"), self.TEXT)
+
+    def test_wrong_declaration_does_not_garble_utf8(self):
+        body = self.TEXT.encode("utf-8")
+        self.assertEqual(fetch.decode_text(body, "text/html; charset=shift_jis"), self.TEXT)
+
+    def test_unknown_declaration_is_skipped(self):
+        body = self.TEXT.encode("utf-8")
+        self.assertEqual(fetch.decode_text(body, "text/html; charset=x-unknown-thing"), self.TEXT)
+
+    def test_shift_jis_html_is_saved_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = ("<article>" + self.TEXT * 100 + "</article>").encode("cp932")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                    patch.object(fetch, "HAS_AX", False), \
+                    patch.object(fetch, "download", return_value=(body, "text/html; charset=Shift_JIS")), \
+                    patch.object(sys, "argv", ["fetch.py", tmp, "article", "https://example.test/a"]):
+                self.assertEqual(fetch.main(), 0)
+            saved = (Path(tmp) / "article.md").read_text(encoding="utf-8")
+        self.assertIn(self.TEXT, saved)
+        self.assertNotIn("�", saved)
+
+
 class MissingCommandTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

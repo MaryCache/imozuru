@@ -16,6 +16,7 @@
     FAIL <name> <理由>
 """
 
+import codecs
 import re
 import shutil
 import subprocess
@@ -68,6 +69,44 @@ def download(url: str) -> tuple[bytes, str]:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 imozuru"})
     with _OPENER.open(req, timeout=90) as res:
         return res.read(MAX_BYTES), res.headers.get("Content-Type", "")
+
+
+# Shift_JIS と名乗るページの多くは実際には Windows の拡張（①・髙 など）を含むので、上位互換の cp932 で読む
+_CHARSET_ALIASES = {"shift_jis": "cp932", "shift-jis": "cp932", "sjis": "cp932", "x-sjis": "cp932",
+                    "windows-31j": "cp932", "ms_kanji": "cp932"}
+
+
+def _declared_charsets(body: bytes, ctype: str) -> list[str]:
+    """Content-Type と HTML の meta が名乗る文字コードを、この順に返す。"""
+    found = re.findall(r"charset\s*=\s*[\"']?([\w.:-]+)", ctype or "", re.I)
+    # meta はファイルの頭に置かれる決まり（HTML 仕様で先頭 1024 バイト以内）。余裕を見て 4096 まで見る
+    found += re.findall(rb"<meta[^>]*charset\s*=\s*[\"']?([\w.:-]+)", body[:4096], re.I)
+    names = [(n.decode("ascii", "ignore") if isinstance(n, bytes) else n).lower() for n in found]
+    return [_CHARSET_ALIASES.get(n, n) for n in names]
+
+
+def decode_text(body: bytes, ctype: str = "") -> str:
+    """本文を、書かれている文字コードで文字にする。
+
+    いつも UTF-8 で読んでいたため、Shift_JIS の日本語記事が U+FFFD の羅列になって中身が消えた
+    （pju-hoge さんのフォークで見つかった・2026-10-15）。名乗りは嘘のこともあるので、
+    名乗った文字コード → UTF-8 → 日本語の定番の順に「化けずに読めるか」で試し、最初に通ったものを使う。
+    どれも通らなければ、置換文字のいちばん少ないものを採る。
+    """
+    candidates = []
+    for name in [*_declared_charsets(body, ctype), "utf-8", "cp932", "euc_jp"]:
+        try:
+            codec = codecs.lookup(name).name
+        except LookupError:  # 知らない名乗り（x-user-defined など）は飛ばす
+            continue
+        if codec not in candidates:
+            candidates.append(codec)
+    for codec in candidates:
+        try:
+            return body.decode(codec)
+        except UnicodeDecodeError:
+            continue
+    return min((body.decode(c, errors="replace") for c in candidates), key=lambda t: t.count("�"))
 
 
 def missing(*commands: str) -> list[str]:
@@ -198,11 +237,12 @@ class _TextExtractor(HTMLParser):
         return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() + "\n"
 
 
-def html_to_md(url: str, out: Path, body: bytes | None = None) -> str:
+def html_to_md(url: str, out: Path, body: bytes | None = None, ctype: str = "") -> str:
     """本文を markdown にする。要約はしない。
 
     ax があれば ax（--all で全文）。無ければ標準ライブラリで文字を取り出す。
     body を渡されたら取り直さずにそれを使う（ax が無いときの二重の取得を避ける）。
+    ctype は body の Content-Type。文字コードの名乗りを読むのに使う。
     """
     if HAS_AX:
         res = subprocess.run(["ax", url, "--md", "--all"], capture_output=True,
@@ -210,13 +250,13 @@ def html_to_md(url: str, out: Path, body: bytes | None = None) -> str:
         text = res.stdout
     else:
         if body is None:
-            body, _ = download(url)
+            body, ctype = download(url)
         if body[:5] == b"%PDF-":
             # 転送先が PDF だった。呼び手が「%PDF」で気づいて PDF として取り直す
             text = "%PDF"
         else:
             parser = _TextExtractor(url)
-            parser.feed(body.decode("utf-8", errors="replace"))
+            parser.feed(decode_text(body, ctype))
             text = parser.text()
     out.write_text(text, encoding="utf-8")
     return text
@@ -359,11 +399,11 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         # HTML と見なして ax に回し、改行が全部消えた（chrome-devtools-mcp の tool-reference・2026-10-11）。
         ext = ".json" if "json" in ctype else ".csv" if "csv" in ctype else ".md"
         kept = saved = sources / f"{name}{ext}"
-        text = body.decode("utf-8", errors="replace")
+        text = decode_text(body, ctype)
         kept.write_text(text, encoding="utf-8")
     elif "html" in ctype or body.lstrip()[:1] == b"<":
         kept = sources / f"{name}.md"
-        text = html_to_md(url, kept, body)
+        text = html_to_md(url, kept, body, ctype)
         saved = kept
         # HTML のつもりが、ax は転送をたどって PDF 本体を受け取っていた（HAL）。PDF として取り直す
         if text.lstrip().startswith("%PDF"):
