@@ -46,19 +46,47 @@ WALL_PATTERNS = (
 )
 
 
+class _Redirect308(urllib.request.HTTPRedirectHandler):
+    """Python 3.10 でも 308 の転送をたどる。
+
+    3.10 の HTTPRedirectHandler は http_error_308 を持たず、redirect_request も 308 をはねる
+    （どちらも 3.11 で足された）。308 は 307 と同じく「同じメソッドのまま別の URL へ」なので、
+    307 として扱わせる。3.11 以降では動きは変わらない（openhands.dev などが 308 を返す・#3）。
+    """
+
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_Redirect308)
+
+
 def download(url: str) -> tuple[bytes, str]:
     """URL を取りに行き、本体と Content-Type を返す。"""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 imozuru"})
-    with urllib.request.urlopen(req, timeout=90) as res:
+    with _OPENER.open(req, timeout=90) as res:
         return res.read(MAX_BYTES), res.headers.get("Content-Type", "")
 
 
+def missing(*commands: str) -> list[str]:
+    """手元に無い外部コマンドの名前を返す。無いまま呼ぶと FileNotFoundError で止まるため。"""
+    return [c for c in commands if shutil.which(c) is None]
+
+
 def pdf_to_text(pdf: Path) -> str:
-    """pdftotext で段組みを保ったまま文字にする。行番号で原文を指せるように -layout を使う。"""
+    """pdftotext で段組みを保ったまま文字にする。行番号で原文を指せるように -layout を使う。
+
+    Xpdf の pdftotext（Git for Windows に入っている）は既定で Latin-1 を出すので、
+    -enc UTF-8 で出力の文字コードを決める。poppler の pdftotext も同じ引数を受け付ける（#3）。
+    """
+    if missing("pdftotext"):
+        return ""
     out = pdf.with_suffix(".txt")
-    subprocess.run(["pdftotext", "-layout", str(pdf), str(out)], check=False,
+    subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)], check=False,
                    stderr=subprocess.DEVNULL)
-    return out.read_text(errors="replace") if out.exists() else ""
+    return out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
 
 
 def ocr_pdf(pdf: Path) -> str:
@@ -67,7 +95,10 @@ def ocr_pdf(pdf: Path) -> str:
     Spencer ら 1995 の PDF は取れたのに pdftotext が1文字しか返さなかった（2026-10-10）。
     英語だけ（入っている言語データが eng のみ）。1ページずつ 200dpi の画像にして読む。
     OCR の誤りは残るので、.txt の先頭に OCR だと書いて、読む人が原本と照らせるようにする。
+    pdftoppm か tesseract が無ければ何もせず空を返す（呼び手が FAIL に無いコマンドを書く）。
     """
+    if missing("pdftoppm", "tesseract"):
+        return ""
     tmp = pdf.parent / f".{pdf.stem}-ocr"
     tmp.mkdir(exist_ok=True)
     subprocess.run(["pdftoppm", "-r", "200", "-png", str(pdf), str(tmp / "p")],
@@ -75,13 +106,14 @@ def ocr_pdf(pdf: Path) -> str:
     pages = []
     for img in sorted(tmp.glob("p-*.png")):
         res = subprocess.run(["tesseract", str(img), "-", "-l", "eng"],
-                             capture_output=True, text=True)
+                             capture_output=True, encoding="utf-8", errors="replace")
         pages.append(f"=== page {img.stem.split('-')[-1]} ===\n{res.stdout}")
         img.unlink()
     tmp.rmdir()
     text = "\n".join(pages)
     out = pdf.with_suffix(".txt")
-    out.write_text("（OCR で起こした本文。誤りが残るので、引用は原本の PDF で確かめる）\n\n" + text)
+    out.write_text("（OCR で起こした本文。誤りが残るので、引用は原本の PDF で確かめる）\n\n" + text,
+                   encoding="utf-8")
     return text
 
 
@@ -173,7 +205,8 @@ def html_to_md(url: str, out: Path, body: bytes | None = None) -> str:
     body を渡されたら取り直さずにそれを使う（ax が無いときの二重の取得を避ける）。
     """
     if HAS_AX:
-        res = subprocess.run(["ax", url, "--md", "--all"], capture_output=True, text=True)
+        res = subprocess.run(["ax", url, "--md", "--all"], capture_output=True,
+                             encoding="utf-8", errors="replace")
         text = res.stdout
     else:
         if body is None:
@@ -185,7 +218,7 @@ def html_to_md(url: str, out: Path, body: bytes | None = None) -> str:
             parser = _TextExtractor(url)
             parser.feed(body.decode("utf-8", errors="replace"))
             text = parser.text()
-    out.write_text(text)
+    out.write_text(text, encoding="utf-8")
     return text
 
 
@@ -197,7 +230,7 @@ def ax_save(url: str, out: Path) -> bool:
     ax が無いときは urllib で取り直す。
     """
     if HAS_AX:
-        subprocess.run(["ax", url, "-o", str(out)], capture_output=True, text=True)
+        subprocess.run(["ax", url, "-o", str(out)], capture_output=True)
     else:
         try:
             out.write_bytes(download(url)[0])
@@ -221,17 +254,18 @@ def youtube_to_md(url: str, out: Path) -> str:
     自動字幕は誤変換が多い（大陸塗りの試しで「線画」が「洗画」）。どちらを使ったかを
     見出しに残し、読み手が引用を動画で確かめるべきか分かるようにする。手動と自動は
     同じファイル名で出てくるので、まず手動だけで取り、無いときだけ自動で取り直す。
+    題名の出力は --encoding で UTF-8 に決める。Windows でパイプに出すと、決めない限り cp932 になる。
     """
     tmp = out.parent / f".{out.stem}-subs"
     tmp.mkdir(exist_ok=True)
     kind = "手動"
     for flag in ("--write-subs", "--write-auto-subs"):
         meta = subprocess.run(
-            ["yt-dlp", "--no-update", "--skip-download", flag,
+            ["yt-dlp", "--no-update", "--skip-download", flag, "--encoding", "utf-8",
              "--sub-langs", "ja,en", "--sub-format", "vtt", "--no-simulate",
              "--print", "%(title)s\t%(uploader)s\t%(upload_date)s",
              "-o", str(tmp / "v.%(ext)s"), url],
-            capture_output=True, text=True)
+            capture_output=True, encoding="utf-8", errors="replace")
         if any(tmp.glob("*.vtt")):
             break
         kind = "自動（誤変換あり・引用は動画で確かめる）"
@@ -239,7 +273,7 @@ def youtube_to_md(url: str, out: Path) -> str:
     lines, last = [], ""
     if vtts:
         stamp = "00:00"
-        for raw in vtts[0].read_text(errors="replace").splitlines():
+        for raw in vtts[0].read_text(encoding="utf-8", errors="replace").splitlines():
             m = re.match(r"(\d\d):(\d\d):(\d\d)\.\d+ -->", raw)
             if m:
                 h, mi, s = (int(x) for x in m.groups())
@@ -258,7 +292,8 @@ def youtube_to_md(url: str, out: Path) -> str:
     title = head[0] if head and head[0] else url
     info = " / ".join(head[1:]) if len(head) > 1 else ""
     body = "\n".join(lines)
-    out.write_text(f"# {title}\n\n{url}\n{info}\n字幕: {kind + ' ' + vtts[0].name if vtts else 'なし'}\n\n{body}\n")
+    out.write_text(f"# {title}\n\n{url}\n{info}\n字幕: {kind + ' ' + vtts[0].name if vtts else 'なし'}\n\n{body}\n",
+                   encoding="utf-8")
     return body
 
 
@@ -286,6 +321,9 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         print(f"FAIL\t{name}\tX はログインの壁で本文が取れない（URL を map.md に残す）")
         return 1
     if YOUTUBE.search(url):
+        if missing("yt-dlp"):
+            print(f"FAIL\t{name}\tyt-dlp が無いので字幕を落とせない")
+            return 1
         kept = sources / f"{name}.md"
         body = youtube_to_md(url, kept)
         if len(body) < MIN_TRANSCRIPT_CHARS:
@@ -322,7 +360,7 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         ext = ".json" if "json" in ctype else ".csv" if "csv" in ctype else ".md"
         kept = saved = sources / f"{name}{ext}"
         text = body.decode("utf-8", errors="replace")
-        kept.write_text(text)
+        kept.write_text(text, encoding="utf-8")
     elif "html" in ctype or body.lstrip()[:1] == b"<":
         kept = sources / f"{name}.md"
         text = html_to_md(url, kept, body)
@@ -360,6 +398,10 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         for p in (saved, kept):
             p.unlink(missing_ok=True)
         reason = f"壁に当たった（{wall}）" if wall else f"本文が短すぎる（{len(text)}文字）"
+        # PDF の文字起こしに要るコマンドが欠けていたなら、短い理由はたいていそれ
+        lacking = missing("pdftotext", "pdftoppm", "tesseract") if saved.suffix == ".pdf" else []
+        if lacking:
+            reason += f"。{'・'.join(lacking)} が無い"
         print(f"FAIL\t{name}\t{reason}")
         return 1
 
@@ -381,4 +423,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 本文の先頭の一行を出すので、端末の文字コードに無い字（cp932 の à など）で落ちないようにする
+    sys.stdout.reconfigure(errors="replace")
     sys.exit(main())

@@ -43,9 +43,24 @@ HEAD_CHARS = 120
 SEEN_LIMIT = 500
 
 
+class _Redirect308(urllib.request.HTTPRedirectHandler):
+    """Python 3.10 でも 308 の転送をたどる（3.10 は 308 を扱わない）。
+
+    fetch.py と同じもの。-I で動かすとスクリプトの置き場が import の道に入らないので、写して持つ。
+    """
+
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_Redirect308)
+
+
 def fetch(url: str) -> tuple[bytes, str]:
     req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=60) as res:
+    with _OPENER.open(req, timeout=60) as res:
         return res.read(5_000_000), res.headers.get("Content-Type", "")
 
 
@@ -158,7 +173,8 @@ def load_watch(topic: Path) -> list[list[str]]:
     p = topic / "watch.tsv"
     if not p.exists():
         return []
-    return [ln.split("\t") for ln in p.read_text().splitlines() if ln and not ln.startswith("#")]
+    return [ln.split("\t") for ln in p.read_text(encoding="utf-8").splitlines()
+            if ln and not ln.startswith("#")]
 
 
 def cmd_add(topic: Path, url: str, name: str | None) -> int:
@@ -190,8 +206,8 @@ def cmd_add(topic: Path, url: str, name: str | None) -> int:
     topic.mkdir(parents=True, exist_ok=True)
     p = topic / "watch.tsv"
     if not p.exists():
-        p.write_text("# 種類\t名前\tフィード\t元の URL\n")
-    with p.open("a") as f:
+        p.write_text("# 種類\t名前\tフィード\t元の URL\n", encoding="utf-8")
+    with p.open("a", encoding="utf-8") as f:
         f.write(f"{kind}\t{label}\t{feed}\t{url}\n")
     print(f"足した: {kind}\t{label}\t{feed}（いま {len(found)} 件）")
     return 0
@@ -207,7 +223,7 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
     if not rows:
         raise SystemExit(f"見張る先が無い: {topic}/watch.tsv（watch.py add で足す）")
     state_p = topic / "watch-state.json"
-    state = json.loads(state_p.read_text()) if state_p.exists() else {}
+    state = json.loads(state_p.read_text(encoding="utf-8")) if state_p.exists() else {}
     now = dt.datetime.now(dt.timezone.utc)
     cutoff = now - dt.timedelta(days=days)
     lines = [f"# 新着 {now.astimezone():%Y-%m-%d %H:%M}", ""]
@@ -247,7 +263,7 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
         lines += ["新着なし", ""]
     if quiet:
         lines += ["## 新着の無かった場所（窓に関係なく最新の1件）", *quiet, ""]
-    state_p.write_text(json.dumps(state, ensure_ascii=False, indent=1))
+    state_p.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     # 秒まで入れる。日付だけだと同じ日の2回目が1回目を上書きして消した（2026-10-10 の試し）。
     out = topic / "watch" / f"{now.astimezone():%Y-%m-%d-%H%M%S}.md"
     n = 2
@@ -255,7 +271,7 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
         out = out.with_name(f"{now.astimezone():%Y-%m-%d-%H%M%S}-{n}.md")
         n += 1
     out.parent.mkdir(exist_ok=True)
-    out.write_text("\n".join(lines) + "\n")
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
     print(f"\n→ {out}（新着 {total} 件・見張る先 {len(rows)}）")
 
@@ -288,4 +304,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 記事の題と冒頭を出すので、端末の文字コードに無い字（cp932 の à など）で落ちないようにする
+    sys.stdout.reconfigure(errors="replace")
     sys.exit(main())

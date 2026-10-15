@@ -47,8 +47,8 @@ npx skills add MaryCache/imozuru
 
 | コマンド | 使うところ | 無いとき |
 |---|---|---|
-| `pdftotext`（poppler） | PDF を文字にする | PDF の本文が取れず `FAIL` になる |
-| `tesseract` | 文字の層が無い古い PDF の OCR | その PDF は `FAIL` になる |
+| `pdftotext`（poppler か Xpdf） | PDF を文字にする | PDF の本文が取れず `FAIL` になる |
+| `pdftoppm`（poppler か Xpdf）と `tesseract` | 文字の層が無い古い PDF の OCR | その PDF は `FAIL` になる |
 | `yt-dlp` | YouTube の字幕を落とす | 動画は `FAIL` になる |
 | [ax](https://github.com/yusukebe/ax) | HTML を markdown にする | 標準ライブラリで文字にする（見出しや表の形は ax のほうが残る） |
 

@@ -27,6 +27,8 @@ class FetchPreservationTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(contextlib.redirect_stdout(self.stdout))
         self.stack.enter_context(patch.object(fetch, "HAS_AX", False))
+        # 外部コマンドの有無で結果が変わらないように、既定では全部あることにする
+        self.stack.enter_context(patch.object(fetch, "missing", return_value=[]))
 
     def seed(self, *suffixes):
         for suffix in suffixes:

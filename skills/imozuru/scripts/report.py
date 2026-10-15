@@ -43,7 +43,7 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
     if not path.exists():
         return False, [], 0, 0
     # splitlines() はページ区切り（\f）も改行に数え、grep・sed と行番号がずれる。改行だけで数える
-    lines = path.read_text(errors="replace").split("\n")
+    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     start = max(1, q["line"] - 2)
     end = min(len(lines), q.get("end", q["line"]) + 2)
     region = norm(" ".join(lines[start - 1:end]))
@@ -128,7 +128,7 @@ def main() -> int:
         return 2
     topic = Path(sys.argv[1]).expanduser()
     check_only = "--check" in sys.argv
-    data = json.loads((topic / "extracts.json").read_text())
+    data = json.loads((topic / "extracts.json").read_text(encoding="utf-8"))
     src = topic / "sources"
 
     bad, rendered = [], {}
@@ -179,10 +179,12 @@ def main() -> int:
 </main></body></html>
 """
     out = topic / "report.html"
-    out.write_text(page)
+    out.write_text(page, encoding="utf-8")
     print(f"→ {out}")
     return 0
 
 
 if __name__ == "__main__":
+    # 抜き書きの頭を出すので、端末の文字コードに無い字（cp932 の à など）で落ちないようにする
+    sys.stdout.reconfigure(errors="replace")
     sys.exit(main())
