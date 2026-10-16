@@ -5,6 +5,8 @@
   <img alt="imozuru" src="assets/brand/logo/imozuru-lockup.svg" width="420">
 </picture>
 
+日本語 | [English](README.en.md)
+
 知らない分野を、言葉を知らないところから原文にたどりつくまで掘る Claude Code のスキル。
 
 「調べて」とだけ頼むと、AI はたいてい検索して上から数件を読み、要約を返す。
