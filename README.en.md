@@ -29,13 +29,13 @@ flowchart LR
     E -- yes, or saturated --> F[Build the<br>extract page]
 ```
 
-- **Map the field**: run two searches that differ in approach (for example, one in English and one in Japanese), collect the terms, people, venues, and standard references, and write them to `map.md`
-- **Follow the trail**: go backward through references, forward through citing works, follow authors, and read a venue end to end. The same moves work in fields with papers and in fields that live only in personal blogs and videos
-- **Save the sources**: store PDFs, articles, and YouTube captions in `sources/`. 404 pages and login walls are caught by looking at the content
-- **No summaries**: the agent does not summarise sources. For each claim it points to "which file, which lines", and the person reading the sources makes the judgement
-- **Stop on evidence**: decide up front which claims are needed to answer the question, and stop when every one of them has a source, or when hardly any new sources turn up
-- **Extract page**: build an HTML page that lists passages cut verbatim from the sources, claim by claim. A script checks that every extract appears word for word at the given lines; if any paraphrase slipped in, it stops instead of building the page
-- **Watch**: pull new posts from the places the dig turned up (Qiita and Zenn tags, note, YouTube, blogs, arXiv) via RSS, and list each with the first line of its text
+- Map the field: run two searches that differ in approach (for example, one in English and one in Japanese), collect the terms, people, venues, and standard references, and write them to `map.md`
+- Follow the trail: go backward through references, forward through citing works, follow authors, and read a venue end to end. The same moves work in fields with papers and in fields that live only in personal blogs and videos
+- Save the sources: store PDFs, articles, and YouTube captions in `sources/`. 404 pages and login walls are caught by looking at the content
+- No summaries: the agent does not summarise sources. For each claim it points to "which file, which lines", and the person reading the sources makes the judgement
+- Stop on evidence: decide up front which claims are needed to answer the question, and stop when every one of them has a source, or when hardly any new sources turn up
+- Extract page: build an HTML page that lists passages cut verbatim from the sources, claim by claim. A script checks that every extract appears word for word at the given lines; if any paraphrase slipped in, it stops instead of building the page
+- Watch: pull new posts from the places the dig turned up (Qiita and Zenn tags, note, YouTube, blogs, arXiv) via RSS, and list each with the first line of its text
 
 ## Install
 
