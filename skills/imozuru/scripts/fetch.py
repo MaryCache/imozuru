@@ -354,8 +354,21 @@ def save_verified(saved: Path, kept: Path, destination: Path) -> Path:
     return target
 
 
+def valid_source_name(name: str) -> bool:
+    """保存する原文の名前は、パスではなく単一のファイル名に限る。"""
+    device = name.split(".", 1)[0].rstrip(" ").upper()
+    return (bool(name.strip(" .")) and name == name.rstrip(" .")
+            and not any(c in name for c in "/\\:")
+            and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name)
+            and device not in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+            and not re.fullmatch(r"(?:COM|LPT)[1-9¹²³]", device))
+
+
 def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     """sources は今回の取得専用の一時置き場。取得・変換・検査中は保存済みの原文に触れない。"""
+    if not valid_source_name(name):
+        print(f"FAIL\t{name!r}\t原文の名前は単一のファイル名にする")
+        return 1
 
     if X_POST.match(url):
         print(f"FAIL\t{name}\tX はログインの壁で本文が取れない（URL を map.md に残す）")
@@ -455,6 +468,9 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 2
     sources, name, url = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+    if not valid_source_name(name):
+        print(f"FAIL\t{name!r}\t原文の名前は単一のファイル名にする")
+        return 1
     sources.mkdir(parents=True, exist_ok=True)
     # 変換や FAIL の後始末は一時置き場だけで行う。同名の原文を検査前に上書きしない。
     # 保存先の中に作るので、成功時の replace はファイルシステムをまたがない。
