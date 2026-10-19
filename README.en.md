@@ -7,17 +7,24 @@
 
 [日本語](README.md) | English
 
-A Claude Code skill that digs into an unfamiliar field, starting from not even knowing its vocabulary and ending at the original sources.
+imozuru is a Claude Code skill that digs into an unfamiliar field, pulling one lead after another until it reaches the original sources.
+It applies ideas from information-seeking research in library and information science, such as Bates's berrypicking, Ellis's model of information-seeking behaviour, and Kuhlthau's Information Search Process.
 
-Ask an AI to "look into" something and it usually searches, reads the top few hits, and hands back a summary.
-imozuru makes the AI search the way research on human information seeking says people do: Bates's berrypicking, Ellis's model of information-seeking behaviour, and Kuhlthau's Information Search Process.
-It first identifies the field's terms, its central people, and its venues, then follows citations, links, and authors like pulling sweet potatoes up by the vine, and saves the sources that matter to disk as they are.
-
-The name comes from *imozuru-shiki* (芋づる式), the Japanese idiom for things coming up one after another, like potatoes on a single vine.
+The name comes from *imozuru-shiki* (芋づる式), the Japanese idiom for things coming up one after another, like sweet potatoes pulled up on a single vine.
 
 > **Language note**: The skill's instructions (`SKILL.md`), the messages from its scripts, and the labels on the extract page are in Japanese. Claude reads the instructions in any language, but this skill has only been tried with requests written in Japanese.
 
-## What it does
+## How it differs from just asking
+
+Ask an LLM to "look into" something without a skill, and it reads the top few search results and returns a summary.
+A summary is quick to read, but the details users need for their own judgement tend to drop out.
+And while users don't know the field's terms they can't choose good search words, so they never get past the words they first thought of.
+
+imozuru first finds the field's terms, its central people, and the venues where knowledge collects, then follows citations, links, and authors from there to gather original sources.
+It saves them without summarising and goes only as far as pointing, for each claim the answer needs, to "which file, which lines".
+Reading the sources and making the judgement is up to the user.
+
+## How it works
 
 ```mermaid
 flowchart LR
@@ -29,13 +36,16 @@ flowchart LR
     E -- yes, or saturated --> F[Build the<br>extract page]
 ```
 
-- Map the field: run two searches that differ in approach (for example, one in English and one in Japanese), collect the terms, people, venues, and standard references, and write them to `map.md`
-- Follow the trail: go backward through references, forward through citing works, follow authors, and read a venue end to end. The same moves work in fields with papers and in fields that live only in personal blogs and videos
-- Save the sources: store PDFs, articles, and YouTube captions in `sources/`. 404 pages and login walls are caught by looking at the content
-- No summaries: the agent does not summarise sources. For each claim it points to "which file, which lines", and the person reading the sources makes the judgement
-- Stop on evidence: decide up front which claims are needed to answer the question, and stop when every one of them has a source, or when hardly any new sources turn up
-- Extract page: build an HTML page that lists passages cut verbatim from the sources, claim by claim. A script checks that every extract appears word for word at the given lines; if any paraphrase slipped in, it stops instead of building the page
-- Watch: pull new posts from the places the dig turned up (Qiita and Zenn tags, note, YouTube, blogs, arXiv) via RSS, and list each with the first line of its text
+Claude first writes down the question and the 3 to 6 claims needed to answer it.
+Next, two searchers (subagents that search the web) with different approaches collect terms, people, and venues into a map (`map.md`).
+After that, it follows references, citing works, and authors until it finds the sources.
+In fields without papers, it follows links inside articles and notes such as "I based this on so-and-so's post".
+
+Sources it finds are saved to `sources/`, and 404 pages and login walls are dropped after checking their content.
+When every claim has a source, or no new sources turn up, the search stops.
+Finally, it builds a page that lists passages cut from the sources, claim by claim (the extract page).
+
+In watch mode, it collects new posts from the venues a dig turned up (Qiita and Zenn tags, note, YouTube, blogs, arXiv) via RSS and lists them.
 
 ## Install
 
@@ -49,16 +59,16 @@ To install by hand, copy `skills/imozuru/` to `~/.claude/skills/imozuru/`.
 
 ## Requirements
 
-The scripts run on the Python 3.10+ standard library alone. They use the following commands when available.
+The scripts run on the Python 3.10+ standard library alone, and use the following commands when they are installed.
 
 | Command | Used for | When missing |
 |---|---|---|
-| `pdftotext` (poppler or Xpdf) | Turning PDFs into text | The PDF text cannot be read and the fetch reports `FAIL` |
+| `pdftotext` (poppler or Xpdf) | Extracting text from PDFs | The PDF text cannot be read and the fetch reports `FAIL` |
 | `pdftoppm` (poppler or Xpdf) and `tesseract` | OCR for old PDFs with no text layer | That PDF reports `FAIL` |
 | `yt-dlp` | Downloading YouTube captions | Videos report `FAIL` |
-| [ax](https://github.com/yusukebe/ax) | Turning HTML into Markdown | Falls back to the standard library (ax keeps headings and tables better) |
+| [ax](https://github.com/yusukebe/ax) | Turning HTML into Markdown | Falls back to the standard library and extracts the text only (ax keeps headings and tables better) |
 
-`chain.py`, which follows citations, uses the [OpenAlex](https://openalex.org/) API. No API key is needed.
+`chain.py`, which follows citations, uses the [OpenAlex](https://openalex.org/) API, and no API key is needed.
 
 ## Usage
 
@@ -78,7 +88,7 @@ Gaussian Splatting ってよく聞くけど全然わからない。論文とか�
 /imozuru watch react
 ```
 
-Results go to `~/research/<topic>/`.
+Results are saved to `~/research/<topic>/` in this form.
 
 ```
 map.md         question, needed claims, terms, people, venues, source table, next leads
@@ -88,7 +98,7 @@ extracts.json  extracts
 report.html    extract page
 ```
 
-A sample extract page is in `examples/demo/`. To try just the script, this builds `report.html`.
+A sample extract page is in `examples/demo/`, and this command tries the script on its own.
 
 ```sh
 python3 skills/imozuru/scripts/report.py examples/demo
@@ -96,31 +106,29 @@ python3 skills/imozuru/scripts/report.py examples/demo
 
 ## Design
 
-### No summaries
+### Why it does not summarise
 
-Summarising in detail during the confused early stage of a search invites premature closure (Kuhlthau 1991).
-The agent only saves sources and points at locations; the person reading them makes the judgement.
+Kuhlthau (1991) describes how summarising in detail during the confused early stage of a search invites premature closure and gets in the way of the search process.
+So imozuru stops at pointing to where things are in the sources.
 
-### Stop on evidence
+### When to stop
 
-Decide 3 to 6 claims needed to answer the question, and stop once every one has a location in a source (HALT; Roh & Han 2026).
-Claims are easy to make too lenient, so at least one must carry a condition from the request's own wording, and more than half must be impossible to answer without reading a source.
+There are two conditions.
+The first is that every claim has a location in a source, following HALT by Roh and Han (2026), which decides when to stop by whether the evidence is in.
+To keep the claims from being too easy, at least one carries a condition from the request's own wording, and more than half cannot be answered without reading a source.
 
-The other stopping point is saturation.
-Run two searches that differ in approach (for example, English and Japanese), and stop when 70% or more of the sources they list are already on the map.
-This borrows the idea of estimating a total from the overlap between two independent searches (Kastner 2007).
-The 70% is a working threshold set while trying the skill out; its grounding is still weak.
+The second is saturation: if 70% or more of the sources the two searchers list are already on the map, the search stops.
+This borrows the idea of estimating a total from the overlap between two independent searches (Kastner 2007), and the 70% is a provisional threshold set while trying the skill out.
 
-### Don't commit to one direction too early
+### Why it does not commit to one direction
 
-When several directions are still possible, AI search tends to pick one, and later searches reinforce that path until it fails (Zhou et al. 2026, HypoSearch).
-When in doubt, run two searcher agents on different hypotheses in parallel and compare when they come back.
+According to Zhou et al. (2026, HypoSearch), when several directions are still possible, AI search tends to pick one and keep choosing it in later searches until it fails.
+So when unsure, imozuru runs two searchers with different hypotheses and compares the results before moving on.
 
-### Fields without papers: follow personal writing
+### Fields without papers
 
-In fields with few papers, such as painting techniques or audio mixing, the know-how lives in personal blogs and videos.
-The skill follows links inside articles and "I based this on so-and-so's post" the same way it follows a paper's references.
-Each saved source gets a type label, and which to trust is left to the reader.
+In fields with few papers, such as painting techniques or audio mixing, much of the know-how lives in personal blogs and videos.
+imozuru follows those the same way it follows papers, so each saved source gets one of the following labels, and which to trust is up to the user.
 
 - [Paper] peer-reviewed or conference papers, arXiv preprints
 - [First-hand] a record by the person who did it (the process of trying, making, or measuring it themselves)
@@ -128,11 +136,11 @@ Each saved source gets a type label, and which to trust is left to the reader.
 - [Roundup] articles that collect or restate others' findings
 - [Official] documents from the maker of the tool or product
 
-### Extracts are checked by machine
+### Why extracts are checked by machine
 
-Dozens of saved sources go unread.
-The step in between is extracting, one of Ellis's behaviours.
-`report.py` checks that each extract appears verbatim at the given lines of its source, and if even one word was paraphrased, it stops without building the page.
+Dozens of saved sources leave the user with no idea where to start.
+So, following extracting from Ellis's model, the skill builds a page that cuts the relevant passage from a source for each claim.
+`report.py` checks that each extract appears verbatim at the given lines of its source, and if even one word differs, it does not build the page.
 
 ## Where the rules come from
 
@@ -140,9 +148,9 @@ The step in between is extracting, one of Ellis's behaviours.
 
 ## Cautions
 
-- The searcher subagents search the web, so the content of your question leaves your machine as search terms. Don't use the skill for research involving confidential or personal data
-- The skill does not use ways around paywalls. Sources it cannot reach are reported as "not reached"
-- Saved sources are copies for reading locally. Don't redistribute them
+- The searchers search the web, so the content of your question leaves your machine as search terms. Don't use the skill for research involving confidential or personal data.
+- The skill does not use ways around paywalls, and sources it cannot reach are reported as "not reached".
+- Saved sources are copies for reading locally, so please don't redistribute them.
 
 ## License
 
