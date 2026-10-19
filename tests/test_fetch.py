@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -186,6 +187,60 @@ class FetchPreservationTests(unittest.TestCase):
         with patch.object(fetch, "download", return_value=(b"Short response", "text/plain")):
             self.assertEqual(self.run_fetch(), 1)
         self.assertEqual(list(self.sources.iterdir()), [])
+
+
+class YoutubeCaptionTests(unittest.TestCase):
+    """yt-dlp の呼び出しを差し替えて、どの字幕を指定するかを検査する。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = Path(tmp.name) / "talk.md"
+
+    def run_youtube(self, language, manual=None, auto=None):
+        """manual と auto は動画が持つ字幕（言語 → 文）。指定されて、かつ有るものだけを .vtt に書く。"""
+        asked = []
+
+        def yt_dlp(cmd, **kwargs):
+            flag = next(c for c in cmd if c.startswith("--write-"))
+            langs = cmd[cmd.index("--sub-langs") + 1]
+            asked.append((flag, langs))
+            tracks = (auto if flag == "--write-auto-subs" else manual) or {}
+            folder = Path(cmd[cmd.index("-o") + 1]).parent
+            for lang in langs.split(","):
+                if lang in tracks:
+                    (folder / f"v.{lang}.vtt").write_text(
+                        f"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{tracks[lang]}\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, f"Talk\tSpeaker\t20220820\t{language}\n", "")
+
+        with patch.object(fetch.subprocess, "run", side_effect=yt_dlp):
+            body = fetch.youtube_to_md("https://www.youtube.com/watch?v=example", self.out)
+        return asked, body
+
+    def test_auto_captions_ask_only_the_spoken_language(self):
+        # 吹き替えの音声にも ja-orig が付く。中身は翻訳なので取らない
+        asked, body = self.run_youtube("en-US", auto={"en-orig": "English speech", "ja-orig": "吹き替え"})
+        self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-auto-subs", "en-orig")])
+        self.assertEqual(body, "[00:01] English speech")
+        text = self.out.read_text(encoding="utf-8")
+        self.assertIn("\nSpeaker / 20220820\n字幕: 自動", text)
+        self.assertIn("v.en-orig.vtt", text)
+
+    def test_japanese_auto_captions(self):
+        asked, body = self.run_youtube("ja", auto={"ja-orig": "日本語の音声"})
+        self.assertEqual(asked[-1], ("--write-auto-subs", "ja-orig"))
+        self.assertEqual(body, "[00:01] 日本語の音声")
+
+    def test_unknown_language_asks_original_japanese_or_english(self):
+        asked, body = self.run_youtube("", auto={"en-orig": "English speech"})
+        self.assertEqual(asked[-1], ("--write-auto-subs", "ja-orig,en-orig"))
+        self.assertEqual(body, "[00:01] English speech")
+
+    def test_manual_captions_skip_auto_captions(self):
+        asked, body = self.run_youtube("en", manual={"ja": "手動の日本語"}, auto={"en-orig": "English"})
+        self.assertEqual(asked, [("--write-subs", "ja,en")])
+        self.assertEqual(body, "[00:01] 手動の日本語")
+        self.assertIn("字幕: 手動 v.ja.vtt", self.out.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
