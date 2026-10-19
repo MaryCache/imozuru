@@ -188,5 +188,51 @@ class FetchPreservationTests(unittest.TestCase):
         self.assertEqual(list(self.sources.iterdir()), [])
 
 
+class CjkPdfFloorTests(unittest.TestCase):
+    """和文の PDF は 3,000 字に届かなくても、HTML と同じ下限を超えていれば残す。"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.sources = Path(tmp.name) / "sources"
+        self.sources.mkdir()
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        stack.enter_context(patch.object(fetch, "missing", return_value=[]))
+
+    def fetch_pdf(self, text):
+        def convert(pdf):
+            pdf.with_suffix(".txt").write_text(text, encoding="utf-8")
+            return text
+        argv = [str(SCRIPT), str(self.sources), "paper", "https://example.test/paper.pdf"]
+        with patch.object(sys, "argv", argv), \
+                patch.object(fetch, "download", return_value=(b"%PDF-1.4\nshort", "application/pdf")), \
+                patch.object(fetch, "pdf_to_text", side_effect=convert):
+            return fetch.main()
+
+    def test_short_japanese_pdf_is_kept(self):
+        text = "日本語の本文です。\n" * 150  # 1,500字
+        self.assertLess(len(text), fetch.MIN_TEXT_CHARS)
+        self.assertEqual(self.fetch_pdf(text), 0)
+        self.assertEqual((self.sources / "paper.txt").read_text(encoding="utf-8"), text)
+
+    def test_short_english_pdf_still_fails(self):
+        text = "English body text.\n" * 120  # 2,280字
+        self.assertGreater(len(text), fetch.MIN_HTML_CHARS)
+        self.assertEqual(self.fetch_pdf(text), 1)
+        self.assertEqual(list(self.sources.iterdir()), [])
+
+    def test_very_short_japanese_pdf_still_fails(self):
+        text = "日本語。\n" * 150  # 750字
+        self.assertEqual(self.fetch_pdf(text), 1)
+        self.assertEqual(list(self.sources.iterdir()), [])
+
+    def test_english_pdf_with_japanese_heading_is_not_cjk(self):
+        text = "日本語の見出し\n" + "English body text.\n" * 100
+        self.assertFalse(fetch.mostly_cjk(text))
+        self.assertTrue(fetch.mostly_cjk("全角の１２３"))
+
+
 if __name__ == "__main__":
     unittest.main()

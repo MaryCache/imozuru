@@ -32,6 +32,11 @@ from pathlib import Path
 # （大陸塗りの試しで 2,904 字の本物の記事が 3,000 の下限で落ちた）。
 MIN_TEXT_CHARS = 3000
 MIN_HTML_CHARS = 1000
+# 和文（日本語・中国語）の PDF は、英語より少ない字数で中身がある。
+# 本文の空白以外の字のうち和文の字がこの割合を超える PDF は、HTML と同じ下限で判定する。
+CJK_RATIO_FOR_PDF = 0.3
+# 和文の字＝かな・漢字・全角の英数字と記号
+_CJK = re.compile(r"[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]")
 MAX_BYTES = 40_000_000
 # 本文ではなく壁に当たったと分かる言い回し。小文字で照合する。
 WALL_PATTERNS = (
@@ -107,6 +112,12 @@ def decode_text(body: bytes, ctype: str = "") -> str:
         except UnicodeDecodeError:
             continue
     return min((body.decode(c, errors="replace") for c in candidates), key=lambda t: t.count("�"))
+
+
+def mostly_cjk(text: str) -> bool:
+    """本文の空白以外の字のうち、和文の字の割合が CJK_RATIO_FOR_PDF を超えるか。"""
+    chars = re.sub(r"\s", "", text)
+    return bool(chars) and len(_CJK.findall(chars)) / len(chars) > CJK_RATIO_FOR_PDF
 
 
 def missing(*commands: str) -> list[str]:
@@ -444,7 +455,8 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         kept = saved = sources / f"{name}.md"
         text = html_to_md(f"https://arxiv.org/html/{arxiv_id.group(1)}", kept)
 
-    floor = MIN_TEXT_CHARS if saved.suffix == ".pdf" else MIN_HTML_CHARS
+    # PDF は英語の論文を基準に高い下限。和文の PDF だけは HTML と同じ下限にする
+    floor = MIN_TEXT_CHARS if saved.suffix == ".pdf" and not mostly_cjk(text) else MIN_HTML_CHARS
     head = text[:4000].lower()
     wall = next((p for p in WALL_PATTERNS if p in head), None)
     if len(text) < floor or (wall and len(text) < MIN_TEXT_CHARS * 4):
