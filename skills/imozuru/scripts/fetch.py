@@ -369,6 +369,10 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     if not valid_source_name(name):
         print(f"FAIL\t{name!r}\t原文の名前は単一のファイル名にする")
         return 1
+    # file:// や ftp:// を渡すと urllib が手元のファイルまで読み、sources/ に写してしまう
+    if urllib.parse.urlsplit(url).scheme.lower() not in {"http", "https"}:
+        print(f"FAIL\t{name}\thttp(s) の URL だけを取りに行く")
+        return 1
 
     if X_POST.match(url):
         print(f"FAIL\t{name}\tX はログインの壁で本文が取れない（URL を map.md に残す）")
