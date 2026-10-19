@@ -288,27 +288,37 @@ MIN_TRANSCRIPT_CHARS = 300
 def youtube_to_md(url: str, out: Path) -> str:
     """yt-dlp で字幕だけ落とし（動画は落とさない）、時刻つきの本文にする。
 
-    手動の字幕を優先し、無ければ自動字幕。日本語→英語の順。自動字幕は同じ文が
+    手動の字幕を優先し（日本語→英語の順）、無ければ動画の元の言語の自動字幕。自動字幕は同じ文が
     次の区間にも繰り返し出るので、直前と同じ文は捨てる。
 
     自動字幕は誤変換が多い（大陸塗りの試しで「線画」が「洗画」）。どちらを使ったかを
     見出しに残し、読み手が引用を動画で確かめるべきか分かるようにする。手動と自動は
     同じファイル名で出てくるので、まず手動だけで取り、無いときだけ自動で取り直す。
     題名の出力は --encoding で UTF-8 に決める。Windows でパイプに出すと、決めない限り cp932 になる。
+
+    自動字幕は、動画の元の言語のもの（en-orig など）だけを取る。ja,en を指定すると、
+    英語の動画では ja が機械翻訳の字幕になり、YouTube はそれに 429 Too Many Requests を返す。
+    yt-dlp はそこで止まり、英語の字幕も残さない（テスラの自動運転の試しで YouTube が3本とも
+    落ちた・2026-10-19）。ja-orig,en-orig の指定でも足りない。AI の吹き替えが付いた動画では
+    吹き替えの音声にも ja-orig が付き、中身は翻訳になる（CVPR の講演 jPCV4GKX9Dw）。そこで手動の回で
+    動画の言語（元の音声の言語）も出させ、自動の回ではその言語の -orig だけを指定する。
     """
     tmp = out.parent / f".{out.stem}-subs"
     tmp.mkdir(exist_ok=True)
-    kind = "手動"
+    kind, langs = "手動", "ja,en"
     for flag in ("--write-subs", "--write-auto-subs"):
         meta = subprocess.run(
             ["yt-dlp", "--no-update", "--skip-download", flag, "--encoding", "utf-8",
-             "--sub-langs", "ja,en", "--sub-format", "vtt", "--no-simulate",
-             "--print", "%(title)s\t%(uploader)s\t%(upload_date)s",
+             "--sub-langs", langs, "--sub-format", "vtt", "--no-simulate",
+             "--print", "%(title)s\t%(uploader)s\t%(upload_date)s\t%(language|)s",
              "-o", str(tmp / "v.%(ext)s"), url],
             capture_output=True, encoding="utf-8", errors="replace")
         if any(tmp.glob("*.vtt")):
             break
         kind = "自動（誤変換あり・引用は動画で確かめる）"
+        # 言語は en-US のように地域つきで来るが、字幕は en-orig。分からなければ日本語か英語の元の字幕
+        spoken = meta.stdout.rstrip("\n").split("\t")[-1].split("-")[0]
+        langs = f"{spoken}-orig" if spoken else "ja-orig,en-orig"
     vtts = sorted(tmp.glob("*.vtt"), key=lambda p: (".ja" not in p.name, p.name))
     lines, last = [], ""
     if vtts:
@@ -330,7 +340,7 @@ def youtube_to_md(url: str, out: Path) -> str:
     tmp.rmdir()
     head = meta.stdout.strip().split("\t")
     title = head[0] if head and head[0] else url
-    info = " / ".join(head[1:]) if len(head) > 1 else ""
+    info = " / ".join(head[1:3]) if len(head) > 1 else ""
     body = "\n".join(lines)
     out.write_text(f"# {title}\n\n{url}\n{info}\n字幕: {kind + ' ' + vtts[0].name if vtts else 'なし'}\n\n{body}\n",
                    encoding="utf-8")
