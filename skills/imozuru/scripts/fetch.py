@@ -69,9 +69,22 @@ class _Redirect308(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_Redirect308)
 
 
+def ascii_url(url: str) -> str:
+    """パスとクエリにそのまま入った日本語の字などを % で符号化する。
+
+    urllib は要求の行を ASCII で組むので、辞書の項目名や自治体のファイル名を符号化せずに
+    書いたリンクは UnicodeEncodeError で止まる（和竿の漆塗りの試しで 36 本中 2 本）。
+    safe に % を入れるので、符号化済みの URL は変わらない。国際化ドメイン名は扱わない。
+    """
+    p = urllib.parse.urlsplit(url)
+    path = urllib.parse.quote(p.path, safe="/%:@!$&'()*+,;=~")
+    query = urllib.parse.quote(p.query, safe="=&%/:+?@!$'()*,;~")
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, path, query, p.fragment))
+
+
 def download(url: str) -> tuple[bytes, str]:
     """URL を取りに行き、本体と Content-Type を返す。"""
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 imozuru"})
+    req = urllib.request.Request(ascii_url(url), headers={"User-Agent": "Mozilla/5.0 imozuru"})
     with _OPENER.open(req, timeout=90) as res:
         return res.read(MAX_BYTES), res.headers.get("Content-Type", "")
 

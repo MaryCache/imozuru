@@ -16,11 +16,14 @@ OpenAlex は1日 1,000 回まで無料の枠（x-ratelimit-limit-usd 0.1）。�
 """
 
 import json
+import re
 import sys
 import urllib.parse
 import urllib.request
 
 API = "https://api.openalex.org"
+# OpenAlex の work ID（W と数字だけ）。「Weak …」のような題名と取り違えないよう、形で見分ける
+WORK_ID = re.compile(r"W\d+")
 FIELDS = "id,display_name,publication_year,cited_by_count,doi,best_oa_location"
 
 
@@ -54,7 +57,7 @@ def search_title(key: str) -> list[dict]:
 
 def resolve(key: str) -> dict:
     """DOI・OpenAlex ID・題名のどれからでも論文を1本引く。題名なら被引用の最も多い1本。"""
-    if key.startswith("W") or "openalex.org/" in key:
+    if WORK_ID.fullmatch(key) or "openalex.org/" in key:
         return get(f"/works/{key.rsplit('/', 1)[-1]}", select=FIELDS)
     if key.startswith("10.") or "doi.org/" in key:
         doi = key.split("doi.org/")[-1]
@@ -87,7 +90,7 @@ def main() -> int:
 
     if cmd == "find":
         # 題名のときは候補を全部見せる。どれが本体かを読み手が確かめられるように。
-        hits = [resolve(key)] if key.startswith(("W", "10.")) or "/" in key else search_title(key)
+        hits = [resolve(key)] if WORK_ID.fullmatch(key) or key.startswith("10.") or "/" in key else search_title(key)
         if not hits:
             print(f"候補なし: {key}（DOI で引き直すか、題名の語を減らす）")
         for w in hits:

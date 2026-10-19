@@ -301,5 +301,35 @@ class CjkPdfFloorTests(unittest.TestCase):
         self.assertTrue(fetch.mostly_cjk("全角の１２３"))
 
 
+class NonAsciiUrlTests(unittest.TestCase):
+    """日本語の字をそのまま含む URL も、符号化して取りに行く（イシュー #9）。"""
+
+    def requested(self, url):
+        seen = []
+
+        def open_(req, timeout):
+            seen.append(req.full_url)
+            res = unittest.mock.MagicMock()
+            res.__enter__.return_value.read.return_value = b"body"
+            return res
+
+        with patch.object(fetch._OPENER, "open", side_effect=open_):
+            fetch.download(url)
+        return seen[0]
+
+    def test_japanese_path_and_query_are_encoded(self):
+        self.assertEqual(self.requested("https://kotobank.jp/word/漆工芸"),
+                         "https://kotobank.jp/word/%E6%BC%86%E5%B7%A5%E8%8A%B8")
+        self.assertEqual(self.requested("https://example.test/search?q=和竿&page=2"),
+                         "https://example.test/search?q=%E5%92%8C%E7%AB%BF&page=2")
+
+    def test_encoded_url_is_unchanged(self):
+        for url in ("https://kotobank.jp/word/%E6%BC%86%E5%B7%A5%E8%8A%B8",
+                    "https://www.youtube.com/watch?v=jPCV4GKX9Dw&t=30s",
+                    "https://example.test/a%20b/c?x=1+2&y=%2F"):
+            with self.subTest(url=url):
+                self.assertEqual(self.requested(url), url)
+
+
 if __name__ == "__main__":
     unittest.main()
