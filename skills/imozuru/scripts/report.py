@@ -25,7 +25,7 @@ import html
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 # 前後に見せる行数。抜き書きがどんな流れの中にあったかを、ページの中で開いて確かめられるように。
 CONTEXT_LINES = 6
@@ -39,8 +39,18 @@ def norm(s: str) -> str:
 
 def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
     """抜き書きが原文の指定の行（前後2行の余裕つき）にそのまま在るか。前後の文脈も返す。"""
-    path = src_dir / q["file"]
-    if not path.exists():
+    relative = Path(q["file"])
+    if relative.is_absolute() or PureWindowsPath(q["file"]).is_absolute() or ".." in relative.parts:
+        return False, [], 0, 0
+    try:
+        root = src_dir.resolve()
+        topic = src_dir.parent.resolve()
+        path = (src_dir / relative).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False, [], 0, 0
+    if root == topic or not root.is_relative_to(topic):
+        return False, [], 0, 0
+    if not path.is_relative_to(root) or not path.is_file():
         return False, [], 0, 0
     # splitlines() はページ区切り（\f）も改行に数え、grep・sed と行番号がずれる。改行だけで数える
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
@@ -50,8 +60,9 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
     # 2段組の PDF は左右の段が1行に混ざり、何行かにまたがる文はそのままでは照合できない
     # （Yoshida 2008 で起きた）。抜き書きを「…」で区切れば、区切りごとに順に照らす。
     # 区切りはページにも「…」として残るので、省いたことが読む人に見える。
-    ok, pos = True, 0
-    for piece in [norm(p) for p in q["text"].split("…") if p.strip()]:
+    pieces = [norm(p) for p in q["text"].split("…") if norm(p)]
+    ok, pos = bool(pieces), 0
+    for piece in pieces:
         at = region.find(piece, pos)
         if at < 0:
             ok = False
