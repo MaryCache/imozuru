@@ -187,6 +187,18 @@ class FetchPreservationTests(unittest.TestCase):
             self.assertEqual(self.run_fetch(), 1)
         self.assertEqual(list(self.sources.iterdir()), [])
 
+    def test_non_http_url_is_rejected_without_reading(self):
+        secret = Path(self.sources.parent) / "secret.txt"
+        secret.write_text("local secret\n" * 200, encoding="utf-8")
+        for url in (secret.as_uri(), "FILE://" + secret.as_posix(),
+                    "ftp://example.test/paper.txt", "-o/tmp/x"):
+            with self.subTest(url=url):
+                with patch.object(fetch, "download") as download:
+                    self.assertEqual(self.run_fetch(url), 1)
+                download.assert_not_called()
+                self.assertEqual(list(self.sources.iterdir()), [])
+        self.assertIn("http(s) の URL だけを取りに行く", self.stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
