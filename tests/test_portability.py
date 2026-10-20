@@ -29,6 +29,9 @@ def load(name):
 
 fetch = load("fetch")
 watch = load("watch")
+# テストの宛先（example.test と手元の小さなサーバー）を、インターネット上の宛先に引けたことにする。
+# 引いた結果を確かめるだけで、接続は urllib が別に名前を引いて行うので、手元のサーバーにつながる
+fetch.resolve = watch.resolve = lambda host: {"93.184.215.14"}
 
 
 class EncodingTests(unittest.TestCase):

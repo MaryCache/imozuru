@@ -23,6 +23,8 @@ def load(name):
 
 fetch = load("fetch")
 report = load("report")
+# テストの宛先（example.test）は名前を引けない。インターネット上の宛先に引けたことにする
+fetch.resolve = lambda host: {"93.184.215.14"}
 
 
 class FileBoundaryTests(unittest.TestCase):

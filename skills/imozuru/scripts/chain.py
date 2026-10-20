@@ -25,6 +25,10 @@ API = "https://api.openalex.org"
 # OpenAlex の work ID（W と数字だけ）。「Weak …」のような題名と取り違えないよう、形で見分ける
 WORK_ID = re.compile(r"W\d+")
 FIELDS = "id,display_name,publication_year,cited_by_count,doi,best_oa_location"
+# API の応答の大きさの上限。200本の一覧でも数百 KB に収まる。
+MAX_BYTES = 20_000_000
+# 1回に出す本数の上限。OpenAlex の per-page の上限と同じ。
+MAX_N = 200
 
 
 def get(path: str, **params) -> dict:
@@ -33,7 +37,10 @@ def get(path: str, **params) -> dict:
         url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "imozuru (mailto omitted)"})
     with urllib.request.urlopen(req, timeout=60) as res:
-        return json.load(res)
+        body = res.read(MAX_BYTES + 1)
+    if len(body) > MAX_BYTES:
+        raise ValueError(f"応答が {MAX_BYTES:,} バイトを超える")
+    return json.loads(body)
 
 
 def search_title(key: str) -> list[dict]:
@@ -56,12 +63,19 @@ def search_title(key: str) -> list[dict]:
 
 
 def resolve(key: str) -> dict:
-    """DOI・OpenAlex ID・題名のどれからでも論文を1本引く。題名なら被引用の最も多い1本。"""
+    """DOI・OpenAlex ID・題名のどれからでも論文を1本引く。題名なら被引用の最も多い1本。
+
+    ID と DOI は API の道筋に入る。「?」や「../」を含む値で問い合わせの形を変えられないよう、
+    ID は形を確かめ、DOI は符号化してから入れる。
+    """
     if WORK_ID.fullmatch(key) or "openalex.org/" in key:
-        return get(f"/works/{key.rsplit('/', 1)[-1]}", select=FIELDS)
+        wid = key.rstrip("/").rsplit("/", 1)[-1]
+        if not WORK_ID.fullmatch(wid):
+            raise SystemExit(f"OpenAlex の ID の形ではない: {key}")
+        return get(f"/works/{wid}", select=FIELDS)
     if key.startswith("10.") or "doi.org/" in key:
         doi = key.split("doi.org/")[-1]
-        return get(f"/works/doi:{doi}", select=FIELDS)
+        return get(f"/works/doi:{urllib.parse.quote(doi, safe='/')}", select=FIELDS)
     hits = search_title(key)
     if not hits:
         raise SystemExit(f"見つからない: {key}")
@@ -69,9 +83,14 @@ def resolve(key: str) -> dict:
 
 
 def row(w: dict) -> str:
+    """1本を1行に。題名などに混ざったタブ・改行・制御文字は空白にする。
+
+    題名は論文の著者や登録者が書く。タブや改行が残ると列や行が増え、エージェントが表を読み違える。
+    端末を操る ESC の並びも、ここで消す。
+    """
     oa = (w.get("best_oa_location") or {}).get("pdf_url") or ""
     wid = (w.get("id") or "").rsplit("/", 1)[-1]
-    return "\t".join(str(x) for x in (
+    return "\t".join(re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", str(x)) for x in (
         w.get("publication_year"), w.get("cited_by_count"), wid,
         (w.get("display_name") or "")[:120], w.get("doi") or "", oa))
 
@@ -81,7 +100,11 @@ def main() -> int:
     n = 20
     if "-n" in args:
         i = args.index("-n")
-        n = int(args[i + 1])
+        value = args[i + 1] if i + 1 < len(args) else ""
+        if not value.isdigit() or not 1 <= int(value) <= MAX_N:
+            print(f"-n には 1〜{MAX_N} の数を書く", file=sys.stderr)
+            return 2
+        n = int(value)
         del args[i:i + 2]
     if len(args) < 2:
         print(__doc__, file=sys.stderr)
@@ -122,4 +145,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, ValueError) as e:  # 接続の失敗・HTTP のエラー・壊れた JSON を1行で返す
+        print(f"取れなかった: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)

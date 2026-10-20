@@ -23,6 +23,7 @@ extracts.json の形（例はリポジトリの examples/demo/extracts.json）:
 
 import html
 import json
+import os
 import re
 import sys
 from pathlib import Path, PureWindowsPath
@@ -54,6 +55,11 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
         return False, [], 0, 0
     # splitlines() はページ区切り（\f）も改行に数え、grep・sed と行番号がずれる。改行だけで数える
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    # 0 や負の行・end が line より前の指定は、前後2行の余裕で原文の頭に寄せると通ってしまい、
+    # 指していない行を「照合済み」と見せる（2026-10-20 のレビュー）。原文の中の行だけを受け付ける
+    first, last = q["line"], q.get("end", q["line"])
+    if not all(type(n) is int for n in (first, last)) or not 1 <= first <= last <= len(lines):
+        return False, [], 0, 0
     start = max(1, q["line"] - 2)
     end = min(len(lines), q.get("end", q["line"]) + 2)
     region = norm(" ".join(lines[start - 1:end]))
@@ -184,13 +190,17 @@ def main() -> int:
 
     page = f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
 <title>{esc(data['title'])} 抜き書き</title><style>{CSS}</style></head>
 <body><main>
 {chr(10).join(body)}
 </main></body></html>
 """
     out = topic / "report.html"
-    out.write_text(page, encoding="utf-8")
+    # 一時ファイルに書いてから置き換える。途中で止まっても前のページが壊れずに残る
+    tmp = out.with_name(".report.html.tmp")
+    tmp.write_text(page, encoding="utf-8")
+    os.replace(tmp, out)
     print(f"→ {out}")
     return 0
 

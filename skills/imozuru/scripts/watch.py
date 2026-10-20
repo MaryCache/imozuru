@@ -23,16 +23,21 @@
     watch/<日付>.md     check の結果
 """
 
+import codecs
 import datetime as dt
 import email.utils
 import html
+import ipaddress
 import json
+import os
 import re
+import socket
 import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from xml.parsers import expat
 
 UA = {"User-Agent": "Mozilla/5.0 imozuru-watch"}
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -41,27 +46,82 @@ HEAD_CHARS = 120
 # 見たことのある URL をフィードごとに残す上限。フィードは新しい順に数十件しか返さないので、
 # これだけあれば「前に見たもの」を新着と取り違えない。
 SEEN_LIMIT = 500
+# フィードやページの大きさの上限。ふつうのフィードは数百 KB に収まる。
+MAX_BYTES = 5_000_000
+
+# ここから UnsafeURL・resolve・url_problem・_Redirect308 までは fetch.py と同じもの。
+# -I で動かすとスクリプトの置き場が import の道に入らない（3.11 から -I は -P を含む）ので、写して持つ。
+# 直すときは両方を直す。
+
+
+class UnsafeURL(Exception):
+    """取りに行ってはいけない URL。"""
+
+
+def resolve(host: str) -> set[str]:
+    """ホスト名を引いて IP アドレスの集まりを返す。テストはここを差し替える。"""
+    return {info[4][0] for info in socket.getaddrinfo(host, None)}
+
+
+def url_problem(url: str) -> str | None:
+    """取りに行ってはいけない URL なら理由を、よければ None を返す。
+
+    フィードの場所はページを書いた他人が決め、watch.tsv に残って check のたびに取りに行く。
+    file:// や 127.0.0.1 を書かれると、手元のファイルやサービスの中身を watch/ に写してしまう
+    （2026-10-20 のレビュー）。名前を引いた先が全部インターネット上の宛先のときだけ通す。
+    名前を引いてから接続するまでの間に引き先を変える手（DNS rebinding）は防げない。
+    """
+    p = urllib.parse.urlsplit(url)
+    if p.scheme.lower() not in {"http", "https"}:
+        return "http(s) の URL だけを取りに行く"
+    if not p.hostname:
+        return "URL にホストが無い"
+    try:
+        addrs = resolve(p.hostname)
+    except (OSError, UnicodeError) as e:
+        return f"ホストを引けない（{e}）"
+    for addr in addrs:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])  # IPv6 の %eth0 のような印を外す
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            return f"手元や内側の宛先（{ip}）には取りに行かない"
+    return None
 
 
 class _Redirect308(urllib.request.HTTPRedirectHandler):
-    """Python 3.10 でも 308 の転送をたどる（3.10 は 308 を扱わない）。
-
-    fetch.py と同じもの。-I で動かすとスクリプトの置き場が import の道に入らないので、写して持つ。
-    """
+    """Python 3.10 でも 308 の転送をたどる（3.10 は 308 を扱わない）。転送の先も url_problem で確かめる。"""
 
     http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # 素の http_error_302 は次へ進む前に転送の本体を最後まで読むので、読まずに閉じる
+        fp.close()
+        problem = url_problem(newurl)
+        if problem:
+            raise UnsafeURL(f"転送先 {newurl}: {problem}")
         return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
 
 
 _OPENER = urllib.request.build_opener(_Redirect308)
 
 
-def fetch(url: str) -> tuple[bytes, str]:
+def fetch_final(url: str) -> tuple[bytes, str, str]:
+    """URL を取りに行き、本体・Content-Type・転送をたどった後の URL を返す。"""
+    problem = url_problem(url)
+    if problem:
+        raise UnsafeURL(problem)
     req = urllib.request.Request(url, headers=UA)
     with _OPENER.open(req, timeout=60) as res:
-        return res.read(5_000_000), res.headers.get("Content-Type", "")
+        body = res.read(MAX_BYTES + 1)
+        if len(body) > MAX_BYTES:
+            raise ValueError(f"本体が {MAX_BYTES:,} バイトを超える")
+        return body, res.headers.get("Content-Type", ""), res.geturl()
+
+
+def fetch(url: str) -> tuple[bytes, str]:
+    body, ctype, _ = fetch_final(url)
+    return body, ctype
 
 
 def known_feed(url: str) -> tuple[str, str] | None:
@@ -78,7 +138,7 @@ def known_feed(url: str) -> tuple[str, str] | None:
         m = re.match(pat, url)
         if m:
             return kind, tmpl.format(*m.groups())
-    if "export.arxiv.org/api/query" in url:
+    if re.match(r"^https?://export\.arxiv\.org/api/query", url):
         return "arxiv", url
     return None
 
@@ -92,27 +152,43 @@ def discover(url: str) -> tuple[str, str]:
     hit = known_feed(url)
     if hit:
         return hit
-    body, ctype = fetch(url)
-    if "xml" in ctype or body.lstrip()[:5] in (b"<?xml", b"<rss ", b"<feed"):
+    body, ctype, final = fetch_final(url)
+    if "xml" in ctype or body.removeprefix(codecs.BOM_UTF8).lstrip()[:5] in (b"<?xml", b"<rss ", b"<feed"):
         return "feed", url
     text = body.decode("utf-8", errors="replace")
-    for m in re.finditer(r"<link\b[^>]*>", text, re.I):
+    # [^<>] にするのは、「<link」が並んで「>」の無いページで、1つずつ末尾まで読み直して遅くなるのを防ぐため
+    for m in re.finditer(r"<link\b[^<>]*>", text, re.I):
         tag = m.group(0)
         if re.search(r'type=["\']application/(rss|atom)\+xml', tag, re.I):
             href = re.search(r'href=["\']([^"\']+)', tag)
             if href:
-                feed = html.unescape(href.group(1))
-                if feed.startswith("/"):
-                    root = re.match(r"^https?://[^/]+", url).group(0)
-                    feed = root + feed
+                # 「feed.xml」「//feeds.example/rss」のような相対の書き方も、転送の後のページを基準に解く
+                feed = urllib.parse.urljoin(final, html.unescape(href.group(1)).strip())
                 kind = "youtube" if "youtube.com/feeds" in feed else "site"
                 return kind, feed
     raise SystemExit(f"RSS が見つからない: {url}（ページに RSS の案内が無い。X・pixiv はそもそも出していない）")
 
 
 def plain(s: str | None) -> str:
-    s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
+    s = html.unescape(re.sub(r"<[^<>]*>", " ", s or ""))
     return re.sub(r"\s+", " ", s).strip()
+
+
+def md_text(s: str) -> str:
+    """フィードの題や冒頭を markdown に書く形にする。
+
+    題は他人が書く。「&amp;lt;img onerror=…&amp;gt;」のように二重に符号化しておくと、
+    plain() の後で生のタグになり、.md を HTML として表示する道具で動いてしまう（2026-10-20 のレビュー）。
+    """
+    s = s.replace("<", "&lt;").replace(">", "&gt;")
+    return s.replace("[", r"\[").replace("]", r"\]")
+
+
+def md_link(url: str) -> str:
+    """記事の URL を markdown のリンク先に書く形にする。http(s) 以外（javascript: など）は空にする。"""
+    if urllib.parse.urlsplit(url).scheme.lower() not in {"http", "https"}:
+        return ""
+    return re.sub(r"[()\s<>]", lambda m: f"%{ord(m.group(0)):02X}", url)
 
 
 def parse_date(s: str | None) -> dt.datetime | None:
@@ -129,20 +205,42 @@ def parse_date(s: str | None) -> dt.datetime | None:
     return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
 
 
+class _Doctype(Exception):
+    pass
+
+
+def _refuse_doctype(*_):
+    raise _Doctype
+
+
+def reject_doctype(feed_bytes: bytes) -> None:
+    """DOCTYPE か ENTITY の宣言があれば ValueError にする。宣言を見つけた時点で読むのを止める。
+
+    前は根の要素より前を正規表現で探していたが、2つの道で素通りした（2026-10-20 のレビュー）。
+    「<!-- <rss -->」のコメントを前に置くとそこを根と取り違え、UTF-16 で書くとバイトの並びが合わない。
+    expat 自身に読ませて宣言の場所で止めれば、コメントも文字コードも expat が正しく扱う。
+    ElementTree は中で使う expat の手綱を外に出さないので、同じ本体を先に expat だけで読む。
+    """
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = _refuse_doctype
+    parser.EntityDeclHandler = _refuse_doctype
+    try:
+        parser.Parse(feed_bytes, True)
+    except _Doctype:
+        raise ValueError("DOCTYPE か ENTITY を含むフィードは読まない") from None
+    except expat.ExpatError:
+        pass  # 壊れた XML は、このあとの ET.fromstring が同じく ParseError にする
+
+
 def items(feed_bytes: bytes) -> list[dict]:
     """RSS 2.0 と Atom の記事を、題・URL・日付・冒頭の形にそろえる。
 
     フィードは他人のサーバーから来る。DOCTYPE や ENTITY を含む XML は、外部の実体の
     読み込みや入れ子の展開（billion laughs）に使われうるので、読まずに弾く。
-    defusedxml を使うのが定石だが入っていない（新しく入れるのは確認が要る）。
+    defusedxml を使うのが定石だが、標準ライブラリだけで動かす決まりなので入れない。
     ふつうの RSS / Atom は DOCTYPE を使わないので、弾いて困ることはまず無い。
     """
-    # 宣言は根の要素より前にしか置けない。本文（HTML の記事を CDATA で含むもの）に
-    # 「<!DOCTYPE html>」が書かれていても弾かないよう、根の前だけを見る。
-    root_at = re.search(rb"<(rss|feed|rdf:RDF)\b", feed_bytes)
-    prolog = feed_bytes[: root_at.start()] if root_at else feed_bytes
-    if re.search(rb"<!(DOCTYPE|ENTITY)", prolog, re.I):
-        raise ValueError("DOCTYPE か ENTITY を含むフィードは読まない")
+    reject_doctype(feed_bytes)
     root = ET.fromstring(feed_bytes)
     out = []
     for it in root.iter("item"):
@@ -170,11 +268,20 @@ def items(feed_bytes: bytes) -> list[dict]:
 
 
 def load_watch(topic: Path) -> list[list[str]]:
+    """watch.tsv の行を返す。列が足りない行は、手で書き損じたものとして飛ばす。"""
     p = topic / "watch.tsv"
     if not p.exists():
         return []
-    return [ln.split("\t") for ln in p.read_text(encoding="utf-8").splitlines()
+    rows = [ln.split("\t") for ln in p.read_text(encoding="utf-8").splitlines()
             if ln and not ln.startswith("#")]
+    return [r for r in rows if len(r) >= 3]
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """一時ファイルに書いてから置き換える。途中で止まっても前のファイルが壊れずに残る。"""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def cmd_add(topic: Path, url: str, name: str | None) -> int:
@@ -203,6 +310,11 @@ def cmd_add(topic: Path, url: str, name: str | None) -> int:
     else:
         # 末尾だけだと「blog」「releases」ばかりになって見分けられないので、ドメインと道筋で名づける
         label = re.sub(r"^https?://(www\.)?", "", url).rstrip("/")[:40]
+    # フィードの URL はページを書いた他人が決める。&#9; や &#10; で列や行を足されないよう、制御文字を断る
+    if any(re.search(r"[\x00-\x1f\x7f]", s) for s in (feed, url)):
+        print(f"足せなかった: {url}（URL にタブや改行が入っている）")
+        return 1
+    label = re.sub(r"[\x00-\x1f\x7f]+", " ", label)
     topic.mkdir(parents=True, exist_ok=True)
     p = topic / "watch.tsv"
     if not p.exists():
@@ -236,7 +348,8 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
             lines += [f"## {label}（{kind}）", f"- 取れなかった: {type(e).__name__}: {e}", ""]
             continue
         seen = set() if fresh else set(state.get(feed, []))
-        first = fresh or feed not in state
+        # 前回が空のフィード（記事0件）も初回と同じく窓で絞る。空の記録で全部を新着と取り違えない
+        first = fresh or not state.get(feed)
         new = [i for i in got if i["link"] and i["link"] not in seen
                and (not first or (i["date"] and i["date"] >= cutoff))]
         new.sort(key=lambda i: i["date"] or now, reverse=True)
@@ -247,7 +360,8 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
             dated = [i for i in got if i["date"]]
             if dated:
                 last = max(dated, key=lambda i: i["date"])
-                quiet.append(f"- {label}（{kind}）最新 {last['date'].astimezone():%Y-%m-%d} [{last['title']}]({last['link']})")
+                quiet.append(f"- {label}（{kind}）最新 {last['date'].astimezone():%Y-%m-%d} "
+                             f"[{md_text(last['title'])}]({md_link(last['link'])})")
             else:
                 quiet.append(f"- {label}（{kind}）記事なし")
             continue
@@ -255,15 +369,14 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
         lines.append(f"## {label}（{kind}）{'・直近' + str(days) + '日' if first else ''}")
         for i in new:
             day = i["date"].astimezone().strftime("%Y-%m-%d") if i["date"] else "日付なし"
-            lines.append(f"- {day} [{i['title']}]({i['link']})")
+            lines.append(f"- {day} [{md_text(i['title'])}]({md_link(i['link'])})")
             if i["head"]:
-                lines.append(f"  > {i['head'][:HEAD_CHARS]}{'…' if len(i['head']) > HEAD_CHARS else ''}")
+                lines.append(f"  > {md_text(i['head'][:HEAD_CHARS])}{'…' if len(i['head']) > HEAD_CHARS else ''}")
         lines.append("")
     if total == 0:
         lines += ["新着なし", ""]
     if quiet:
         lines += ["## 新着の無かった場所（窓に関係なく最新の1件）", *quiet, ""]
-    state_p.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     # 秒まで入れる。日付だけだと同じ日の2回目が1回目を上書きして消した（2026-10-10 の試し）。
     out = topic / "watch" / f"{now.astimezone():%Y-%m-%d-%H%M%S}.md"
     n = 2
@@ -271,7 +384,9 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
         out = out.with_name(f"{now.astimezone():%Y-%m-%d-%H%M%S}-{n}.md")
         n += 1
     out.parent.mkdir(exist_ok=True)
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 結果を書けてから「見た」の記録を進める。逆だと、書けなかった新着が次から出なくなる
+    atomic_write(out, "\n".join(lines) + "\n")
+    atomic_write(state_p, json.dumps(state, ensure_ascii=False, indent=1))
     print("\n".join(lines))
     print(f"\n→ {out}（新着 {total} 件・見張る先 {len(rows)}）")
 
@@ -284,7 +399,11 @@ def main() -> int:
         args.remove("--fresh")
     if "--days" in args:
         i = args.index("--days")
-        days = int(args[i + 1])
+        value = args[i + 1] if i + 1 < len(args) else ""
+        if not value.isdigit() or int(value) < 1:
+            print("--days には 1 以上の日数を書く", file=sys.stderr)
+            return 2
+        days = int(value)
         del args[i:i + 2]
     if len(args) < 2:
         print(__doc__, file=sys.stderr)

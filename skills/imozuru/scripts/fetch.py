@@ -17,8 +17,10 @@
 """
 
 import codecs
+import ipaddress
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -38,6 +40,12 @@ CJK_RATIO_FOR_PDF = 0.3
 # 和文の字＝かな・漢字・全角の英数字と記号
 _CJK = re.compile(r"[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]")
 MAX_BYTES = 40_000_000
+# 外のコマンド（pdftotext・pdftoppm・tesseract・ax・yt-dlp）1回の時間の上限（秒）。
+# 細工した PDF やページで止まらなくなるのを防ぐ。ふつうの論文は数秒〜数十秒で終わる。
+TOOL_TIMEOUT = 300
+# OCR にかけるページ数の上限。文字の層が無い古い論文は数十ページに収まる。
+# 何千ページもある PDF で、画像の書き出しが手元のディスクを埋めないようにする。
+OCR_MAX_PAGES = 60
 # 本文ではなく壁に当たったと分かる言い回し。小文字で照合する。
 WALL_PATTERNS = (
     "404 not found",
@@ -63,10 +71,52 @@ class _Redirect308(urllib.request.HTTPRedirectHandler):
     http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # 転送の応答の本体は読まずに閉じる。素の http_error_302 は次へ進む前に本体を最後まで
+        # 読むので、大きな本体を付けた転送で MAX_BYTES の上限を素通りする（3.12 の実装で確認）
+        fp.close()
+        problem = url_problem(newurl)
+        if problem:
+            raise UnsafeURL(f"転送先 {newurl}: {problem}")
         return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
 
 
 _OPENER = urllib.request.build_opener(_Redirect308)
+
+
+class UnsafeURL(Exception):
+    """取りに行ってはいけない URL。呼び手はほかの取得の失敗と同じく FAIL にする。"""
+
+
+def resolve(host: str) -> set[str]:
+    """ホスト名を引いて IP アドレスの集まりを返す。テストはここを差し替える。"""
+    return {info[4][0] for info in socket.getaddrinfo(host, None)}
+
+
+def url_problem(url: str) -> str | None:
+    """取りに行ってはいけない URL なら理由を、よければ None を返す。
+
+    URL も転送の先も、検索結果のページを書いた他人が決める。127.0.0.1 や社内の宛先を書かれると、
+    手元で動いているサービス（開発用のサーバー・ローカルの AI・ブラウザのデバッグ口）の中身を
+    sources/ に写してしまう（2026-10-20 のレビュー）。名前を引いた先が全部インターネット上の
+    宛先のときだけ通す。10進や16進で書いた IP も、名前を引けば 127.0.0.1 などになるので同じく止まる。
+    名前を引いてから接続するまでの間に引き先を変える手（DNS rebinding）は防げない。
+    """
+    p = urllib.parse.urlsplit(url)
+    if p.scheme.lower() not in {"http", "https"}:
+        return "http(s) の URL だけを取りに行く"
+    if not p.hostname:
+        return "URL にホストが無い"
+    try:
+        addrs = resolve(p.hostname)
+    except (OSError, UnicodeError) as e:
+        return f"ホストを引けない（{e}）"
+    for addr in addrs:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])  # IPv6 の %eth0 のような印を外す
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            return f"手元や内側の宛先（{ip}）には取りに行かない"
+    return None
 
 
 def ascii_url(url: str) -> str:
@@ -83,15 +133,28 @@ def ascii_url(url: str) -> str:
 
 
 def download(url: str) -> tuple[bytes, str]:
-    """URL を取りに行き、本体と Content-Type を返す。"""
+    """URL を取りに行き、本体と Content-Type を返す。
+
+    MAX_BYTES を超える本体は途中で切らずに取得ごと失敗にする。切れた原文を OK として残すと、
+    後ろの部分を引用できないのに「原文に無い」と読み違える。
+    """
+    problem = url_problem(url)
+    if problem:
+        raise UnsafeURL(problem)
     req = urllib.request.Request(ascii_url(url), headers={"User-Agent": "Mozilla/5.0 imozuru"})
     with _OPENER.open(req, timeout=90) as res:
-        return res.read(MAX_BYTES), res.headers.get("Content-Type", "")
+        body = res.read(MAX_BYTES + 1)
+        if len(body) > MAX_BYTES:
+            raise ValueError(f"本体が {MAX_BYTES:,} バイトを超える")
+        return body, res.headers.get("Content-Type", "")
 
 
 # Shift_JIS と名乗るページの多くは実際には Windows の拡張（①・髙 など）を含むので、上位互換の cp932 で読む
 _CHARSET_ALIASES = {"shift_jis": "cp932", "shift-jis": "cp932", "sjis": "cp932", "x-sjis": "cp932",
                     "windows-31j": "cp932", "ms_kanji": "cp932"}
+# 先頭の BOM で分かる文字コード。UTF-32 の BOM は UTF-16 の BOM で始まるので先に見る
+_BOMS = ((codecs.BOM_UTF8, "utf-8-sig"), (codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
+         (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"))
 
 
 def _declared_charsets(body: bytes, ctype: str) -> list[str]:
@@ -108,23 +171,42 @@ def decode_text(body: bytes, ctype: str = "") -> str:
 
     いつも UTF-8 で読んでいたため、Shift_JIS の日本語記事が U+FFFD の羅列になって中身が消えた
     （pju-hoge さんのフォークで見つかった・2026-10-15）。名乗りは嘘のこともあるので、
-    名乗った文字コード → UTF-8 → 日本語の定番の順に「化けずに読めるか」で試し、最初に通ったものを使う。
+    BOM → UTF-8 → 名乗った文字コード → 日本語の定番の順に「化けずに読めるか」で試し、最初に通ったものを使う。
     どれも通らなければ、置換文字のいちばん少ないものを採る。
+
+    UTF-8 を名乗りより先に試すのは、latin-1 のようにどんな並びでも読めてしまう名乗りがあるため。
+    UTF-8 の文法に合う並びは、ほかの文字コードの文章からはまず偶然には生まれない。
+    名乗りはページを書いた他人が決めるので、zlib や base64 のような文字コードでないものは飛ばす
+    （名乗るだけで fetch.py が LookupError で止まった・2026-10-20 のレビュー）。
     """
+    for bom, codec in _BOMS:
+        if body.startswith(bom):
+            try:
+                return body.decode(codec)
+            except UnicodeError:
+                break
     candidates = []
-    for name in [*_declared_charsets(body, ctype), "utf-8", "cp932", "euc_jp"]:
+    for name in ["utf-8", *_declared_charsets(body, ctype), "cp932", "euc_jp"]:
         try:
-            codec = codecs.lookup(name).name
+            info = codecs.lookup(name)
         except LookupError:  # 知らない名乗り（x-user-defined など）は飛ばす
             continue
-        if codec not in candidates:
-            candidates.append(codec)
+        if not getattr(info, "_is_text_encoding", True):
+            continue
+        if info.name not in candidates:
+            candidates.append(info.name)
     for codec in candidates:
         try:
             return body.decode(codec)
-        except UnicodeDecodeError:
+        except UnicodeError:
             continue
-    return min((body.decode(c, errors="replace") for c in candidates), key=lambda t: t.count("�"))
+    decoded = []
+    for codec in candidates:
+        try:
+            decoded.append(body.decode(codec, errors="replace"))
+        except UnicodeError:  # idna など、置き換えでも読めない文字コードがある
+            continue
+    return min(decoded, key=lambda t: t.count("�"))
 
 
 def mostly_cjk(text: str) -> bool:
@@ -138,6 +220,14 @@ def missing(*commands: str) -> list[str]:
     return [c for c in commands if shutil.which(c) is None]
 
 
+def run_tool(cmd: list[str], **kwargs) -> subprocess.CompletedProcess | None:
+    """外のコマンドを TOOL_TIMEOUT 秒の上限つきで動かす。上限を超えたら止めて None を返す。"""
+    try:
+        return subprocess.run(cmd, timeout=TOOL_TIMEOUT, **kwargs)
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def pdf_to_text(pdf: Path) -> str:
     """pdftotext で段組みを保ったまま文字にする。行番号で原文を指せるように -layout を使う。
 
@@ -147,8 +237,8 @@ def pdf_to_text(pdf: Path) -> str:
     if missing("pdftotext"):
         return ""
     out = pdf.with_suffix(".txt")
-    subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)], check=False,
-                   stderr=subprocess.DEVNULL)
+    run_tool(["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)], check=False,
+             stderr=subprocess.DEVNULL)
     return out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
 
 
@@ -157,27 +247,42 @@ def ocr_pdf(pdf: Path) -> str:
 
     Spencer ら 1995 の PDF は取れたのに pdftotext が1文字しか返さなかった（2026-10-10）。
     英語だけ（入っている言語データが eng のみ）。1ページずつ 200dpi の画像にして読む。
-    OCR の誤りは残るので、.txt の先頭に OCR だと書いて、読む人が原本と照らせるようにする。
+    OCR_MAX_PAGES を超えるページは起こさない。
     pdftoppm か tesseract が無ければ何もせず空を返す（呼び手が FAIL に無いコマンドを書く）。
+    .txt には書かない。書くかどうかは呼び手（ocr_if_longer）が決める。
     """
     if missing("pdftoppm", "tesseract"):
         return ""
     tmp = pdf.parent / f".{pdf.stem}-ocr"
     tmp.mkdir(exist_ok=True)
-    subprocess.run(["pdftoppm", "-r", "200", "-png", str(pdf), str(tmp / "p")],
-                   check=False, stderr=subprocess.DEVNULL)
+    run_tool(["pdftoppm", "-r", "200", "-l", str(OCR_MAX_PAGES), "-png", str(pdf), str(tmp / "p")],
+             check=False, stderr=subprocess.DEVNULL)
     pages = []
     for img in sorted(tmp.glob("p-*.png")):
-        res = subprocess.run(["tesseract", str(img), "-", "-l", "eng"],
-                             capture_output=True, encoding="utf-8", errors="replace")
-        pages.append(f"=== page {img.stem.split('-')[-1]} ===\n{res.stdout}")
+        res = run_tool(["tesseract", str(img), "-", "-l", "eng"],
+                       capture_output=True, encoding="utf-8", errors="replace")
+        pages.append(f"=== page {img.stem.split('-')[-1]} ===\n{res.stdout if res else ''}")
         img.unlink()
+    for leftover in tmp.iterdir():  # 時間切れで止めた pdftoppm の書きかけ
+        leftover.unlink()
     tmp.rmdir()
-    text = "\n".join(pages)
-    out = pdf.with_suffix(".txt")
-    out.write_text("（OCR で起こした本文。誤りが残るので、引用は原本の PDF で確かめる）\n\n" + text,
-                   encoding="utf-8")
-    return text
+    return "\n".join(pages)
+
+
+def ocr_if_longer(pdf: Path, text: str) -> str:
+    """文字の層が薄い PDF を OCR にかけ、OCR のほうが長いときだけ .txt を置き換えて返す。
+
+    OCR の道具が無いときや起こせなかったときに、pdftotext が取れた分まで空で上書きしていた
+    （2026-10-20 のレビュー）。OCR の誤りは残るので、.txt の先頭に OCR だと書いて、
+    読む人が原本と照らせるようにする。
+    """
+    ocr = ocr_pdf(pdf)
+    if len(ocr.strip()) <= len(text.strip()):
+        return text
+    pdf.with_suffix(".txt").write_text(
+        f"（OCR で起こした本文。{OCR_MAX_PAGES} ページを超える分は起こしていない。"
+        "誤りが残るので、引用は原本の PDF で確かめる）\n\n" + ocr, encoding="utf-8")
+    return ocr
 
 
 HAS_AX = shutil.which("ax") is not None
@@ -226,10 +331,14 @@ class _TextExtractor(HTMLParser):
         elif tag in self.BLOCK:
             self._emit("\n")
         elif tag == "a":
-            href = dict(attrs).get("href")
-            if href and not href.startswith(("#", "javascript:")):
-                self.href = urllib.parse.urljoin(self.base, href)
-                self.link_text = []
+            href = (dict(attrs).get("href") or "").strip()
+            if href and not href.startswith("#"):
+                full = urllib.parse.urljoin(self.base, href)
+                # JavaScript: や data: のリンクは、.md を開いた先で押すとページの中で動く。http(s) だけ残す
+                if urllib.parse.urlsplit(full).scheme.lower() in {"http", "https"}:
+                    # 括弧と空白が URL の中にあると、[文字](URL) の形がそこで切れる
+                    self.href = re.sub(r"[()\s]", lambda m: f"%{ord(m.group(0)):02X}", full)
+                    self.link_text = []
 
     def handle_endtag(self, tag):
         if tag in self.SKIP:
@@ -242,6 +351,7 @@ class _TextExtractor(HTMLParser):
             self._emit("\n")
         elif tag == "a" and self.href is not None:
             text = " ".join("".join(self.link_text).split())
+            text = text.replace("[", r"\[").replace("]", r"\]")
             self._emit(f"[{text}]({self.href})" if text else "")
             self.href = None
 
@@ -270,9 +380,9 @@ def html_to_md(url: str, out: Path, body: bytes | None = None, ctype: str = "") 
     """
     if HAS_AX:
         # URL は「--」の後ろに置く。「-」で始まる文字列をオプションとして読ませない
-        res = subprocess.run(["ax", "--md", "--all", "--", url], capture_output=True,
-                             encoding="utf-8", errors="replace")
-        text = res.stdout
+        res = run_tool(["ax", "--md", "--all", "--", url], capture_output=True,
+                       encoding="utf-8", errors="replace")
+        text = res.stdout if res else ""
     else:
         if body is None:
             body, ctype = download(url)
@@ -295,19 +405,33 @@ def ax_save(url: str, out: Path) -> bool:
     ax が無いときは urllib で取り直す。
     """
     if HAS_AX:
-        subprocess.run(["ax", "-o", str(out), "--", url], capture_output=True)
+        run_tool(["ax", "-o", str(out), "--", url], capture_output=True)
     else:
         try:
             out.write_bytes(download(url)[0])
         except Exception:  # 取れなければ呼び手が FAIL にする
             return False
-    return out.exists() and out.stat().st_size > 0
+    return out.exists() and 0 < out.stat().st_size <= MAX_BYTES
 
 
-YOUTUBE = re.compile(r"(youtube\.com/(watch|shorts|live)|youtu\.be/)")
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
 X_POST = re.compile(r"^https?://(www\.)?(x|twitter)\.com/")
 # 字幕は数分の動画でも千文字に届かないことがあるので、論文より低い下限を使う。
 MIN_TRANSCRIPT_CHARS = 300
+
+
+def is_youtube(url: str) -> bool:
+    """YouTube の動画の URL か。ホスト名で見る。
+
+    URL のどこかに「youtu.be/」があれば YouTube と見なしていたので、
+    https://evil.example/?next=youtu.be/ のような他人のページまで yt-dlp に渡っていた
+    （2026-10-20 のレビュー）。yt-dlp は何でも読む汎用の読み取りを持っているので、YouTube だけに絞る。
+    """
+    p = urllib.parse.urlsplit(url)
+    host = (p.hostname or "").lower()
+    if host == "youtu.be":
+        return len(p.path) > 1
+    return host in YOUTUBE_HOSTS and re.match(r"/(watch|shorts/|live/)", p.path) is not None
 
 
 def youtube_to_md(url: str, out: Path) -> str:
@@ -331,20 +455,26 @@ def youtube_to_md(url: str, out: Path) -> str:
     tmp = out.parent / f".{out.stem}-subs"
     tmp.mkdir(exist_ok=True)
     kind, langs = "手動", "ja,en"
+    printed = ""
     for flag in ("--write-subs", "--write-auto-subs"):
-        meta = subprocess.run(
+        meta = run_tool(
             ["yt-dlp", "--no-update", "--skip-download", flag, "--encoding", "utf-8",
              "--sub-langs", langs, "--sub-format", "vtt", "--no-simulate",
              "--print", "%(title)s\t%(uploader)s\t%(upload_date)s\t%(language|)s",
              "-o", str(tmp / "v.%(ext)s"), "--", url],
             capture_output=True, encoding="utf-8", errors="replace")
+        if meta is None:  # 時間切れ。字幕なしとして呼び手が FAIL にする
+            break
+        printed = meta.stdout
         if any(tmp.glob("*.vtt")):
             break
         kind = "自動（誤変換あり・引用は動画で確かめる）"
         # 言語は en-US のように地域つきで来るが、字幕は en-orig。分からなければ日本語か英語の元の字幕
-        spoken = meta.stdout.rstrip("\n").split("\t")[-1].split("-")[0]
-        langs = f"{spoken}-orig" if spoken else "ja-orig,en-orig"
-    vtts = sorted(tmp.glob("*.vtt"), key=lambda p: (".ja" not in p.name, p.name))
+        spoken = printed.rstrip("\n").split("\t")[-1].split("-")[0]
+        # 言語の名乗りは動画の持ち主が決める。「all」などで字幕を全部落とさせないよう、言語の形だけ通す
+        langs = f"{spoken}-orig" if re.fullmatch(r"[a-z]{2,3}", spoken) else "ja-orig,en-orig"
+    vtts = sorted((p for p in tmp.glob("*.vtt") if p.stat().st_size <= MAX_BYTES),
+                  key=lambda p: (".ja" not in p.name, p.name))
     lines, last = [], ""
     if vtts:
         stamp = "00:00"
@@ -354,7 +484,8 @@ def youtube_to_md(url: str, out: Path) -> str:
                 h, mi, s = (int(x) for x in m.groups())
                 stamp = f"{h * 60 + mi:02d}:{s:02d}"
                 continue
-            text = re.sub(r"<[^>]+>", "", raw).strip()
+            # [^<>] にするのは、「<」が並んで「>」の無い行で、1つずつ行末まで読み直して遅くなるのを防ぐため
+            text = re.sub(r"<[^<>]*>", "", raw).strip()
             if not text or text in ("WEBVTT",) or text.startswith(("Kind:", "Language:")):
                 continue
             if text != last:
@@ -363,7 +494,7 @@ def youtube_to_md(url: str, out: Path) -> str:
     for p in tmp.iterdir():
         p.unlink()
     tmp.rmdir()
-    head = meta.stdout.strip().split("\t")
+    head = printed.strip().split("\t")
     title = head[0] if head and head[0] else url
     info = " / ".join(head[1:3]) if len(head) > 1 else ""
     body = "\n".join(lines)
@@ -373,8 +504,9 @@ def youtube_to_md(url: str, out: Path) -> str:
 
 
 def first_line(text: str) -> str:
+    """本文の最初の意味のある1行。端末に出すので、制御文字（色やクリップボードを操る ESC の並び）は空白にする。"""
     for line in text.splitlines():
-        line = re.sub(r"\s+", " ", line).strip()
+        line = re.sub(r"[\s\x00-\x1f\x7f-\x9f]+", " ", line).strip()
         if len(line) > 8:
             return line[:100]
     return ""
@@ -390,11 +522,16 @@ def save_verified(saved: Path, kept: Path, destination: Path) -> Path:
 
 
 def valid_source_name(name: str) -> bool:
-    """保存する原文の名前は、パスではなく単一のファイル名に限る。"""
+    """保存する原文の名前は、パスではなく単一のファイル名に限る。
+
+    Windows で使えない字（<>"|?*）は、そこで保存が OSError で止まるので先に断る。
+    字の向きを変える制御文字（U+202E など）は、名前の見た目を偽れるので断る。
+    """
     device = name.split(".", 1)[0].rstrip(" ").upper()
     return (bool(name.strip(" .")) and name == name.rstrip(" .")
-            and not any(c in name for c in "/\\:")
+            and not any(c in name for c in "/\\:<>\"|?*")
             and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name)
+            and not re.search(r"[‎‏‪-‮⁦-⁩]", name)
             and device not in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
             and not re.fullmatch(r"(?:COM|LPT)[1-9¹²³]", device))
 
@@ -404,15 +541,17 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     if not valid_source_name(name):
         print(f"FAIL\t{name!r}\t原文の名前は単一のファイル名にする")
         return 1
-    # file:// や ftp:// を渡すと urllib が手元のファイルまで読み、sources/ に写してしまう
-    if urllib.parse.urlsplit(url).scheme.lower() not in {"http", "https"}:
-        print(f"FAIL\t{name}\thttp(s) の URL だけを取りに行く")
+    # file:// や手元の宛先を渡すと、urllib が手元のファイルやサービスの中身を sources/ に写してしまう。
+    # ax と yt-dlp に渡す前にもここで止める（両者がたどる転送の先までは見られない）
+    problem = url_problem(url)
+    if problem:
+        print(f"FAIL\t{name}\t{problem}")
         return 1
 
     if X_POST.match(url):
         print(f"FAIL\t{name}\tX はログインの壁で本文が取れない（URL を map.md に残す）")
         return 1
-    if YOUTUBE.search(url):
+    if is_youtube(url):
         if missing("yt-dlp"):
             print(f"FAIL\t{name}\tyt-dlp が無いので字幕を落とせない")
             return 1
@@ -443,7 +582,7 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         text = pdf_to_text(saved)
         kept = saved.with_suffix(".txt")
         if len(text.strip()) < 200 and not re.search(r"arxiv\.org", url):
-            text = ocr_pdf(saved)  # 文字の層が無い PDF。arXiv は下で HTML 版に切り替える
+            text = ocr_if_longer(saved, text)  # 文字の層が無い PDF。arXiv は下で HTML 版に切り替える
     elif ctype.startswith(("text/plain", "text/markdown", "application/json", "text/csv")):
         # GitHub の README やデータ（raw.githubusercontent.com）はこの形で来る
         # （和田三造の配色のデータで FAIL した・2026-10-10）。中身をそのまま残す。
@@ -465,7 +604,7 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
                 text = pdf_to_text(saved)
                 kept = saved.with_suffix(".txt")
                 if len(text.strip()) < 200:
-                    text = ocr_pdf(saved)
+                    text = ocr_if_longer(saved, text)
             else:
                 saved.unlink(missing_ok=True)
                 print(f"FAIL\t{name}\t転送先の PDF を保存できなかった")

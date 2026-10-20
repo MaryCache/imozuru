@@ -15,6 +15,10 @@ SCRIPT = Path(__file__).resolve().parents[1] / "skills/imozuru/scripts/fetch.py"
 SPEC = importlib.util.spec_from_file_location("imozuru_fetch", SCRIPT)
 fetch = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fetch)
+# テストの宛先（example.test）は名前を引けない。インターネット上の宛先に引けたことにする。
+# 宛先の検査そのものは UnsafeUrlTests が本物に近い引き先を渡して確かめる
+PUBLIC_IP = "93.184.215.14"
+fetch.resolve = lambda host: {PUBLIC_IP}
 
 
 class FetchPreservationTests(unittest.TestCase):
