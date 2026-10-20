@@ -37,6 +37,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import zlib
 from xml.parsers import expat
 
 UA = {"User-Agent": "Mozilla/5.0 imozuru-watch"}
@@ -116,6 +117,13 @@ def fetch_final(url: str) -> tuple[bytes, str, str]:
         body = res.read(MAX_BYTES + 1)
         if len(body) > MAX_BYTES:
             raise ValueError(f"本体が {MAX_BYTES:,} バイトを超える")
+        # DeepMind のブログは頼まなくても gzip で返す。展開した後の大きさにも上限を置く
+        # （小さな gzip が何 GB にも膨らむ爆弾で、メモリを使い切らないように）
+        if res.headers.get("Content-Encoding", "").lower() == "gzip":
+            inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            body = inflater.decompress(body, MAX_BYTES + 1)
+            if len(body) > MAX_BYTES:
+                raise ValueError(f"展開した本体が {MAX_BYTES:,} バイトを超える")
         return body, res.headers.get("Content-Type", ""), res.geturl()
 
 

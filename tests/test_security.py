@@ -287,6 +287,29 @@ class FeedTests(unittest.TestCase):
             self.assertEqual(watch.cmd_add(Path(tmp), "https://a.example/", None), 1)
             self.assertFalse((Path(tmp) / "watch.tsv").exists())
 
+    def gzip_response(self, body):
+        res = MagicMock()
+        res.read.return_value = body
+        res.headers = {"Content-Encoding": "gzip"}
+        res.geturl.return_value = "https://a.example/feed"
+        res.__enter__.return_value = res
+        return res
+
+    def test_gzip_feed_is_inflated(self):
+        import gzip
+        feed = b'<?xml version="1.0"?><rss><channel><item><title>t</title></item></channel></rss>'
+        with patch.object(watch, "resolve", lambda host: {PUBLIC_IP}), \
+                patch.object(watch._OPENER, "open", return_value=self.gzip_response(gzip.compress(feed))):
+            self.assertEqual(watch.fetch("https://a.example/feed")[0], feed)
+
+    def test_gzip_bomb_is_refused(self):
+        import gzip
+        bomb = gzip.compress(b"\0" * (watch.MAX_BYTES * 10))
+        with patch.object(watch, "resolve", lambda host: {PUBLIC_IP}), \
+                patch.object(watch._OPENER, "open", return_value=self.gzip_response(bomb)):
+            with self.assertRaises(ValueError):
+                watch.fetch("https://a.example/feed")
+
     def test_short_rows_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "watch.tsv").write_text("site\tonly-two\nsite\tok\thttps://a.example/feed\n", encoding="utf-8")
