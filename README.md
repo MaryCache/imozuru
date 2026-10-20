@@ -45,7 +45,22 @@ Claudeはまず、問いと、答えるために必要な主張を3〜6個書き
 
 ## 入れ方
 
-[skills](https://github.com/vercel-labs/skills) のCLIで入れられます。
+### Claude Code のプラグイン
+
+このリポジトリをマーケットプレイスとして追加し、プラグインとして入れます。
+
+```text
+/plugin marketplace add MaryCache/imozuru
+/plugin install imozuru@imozuru
+```
+
+プラグインには版の番号を付けていないので、main にコミットが入るたびに新しい版として扱われます。
+自動で最新にしたいときは、`/plugin` のマーケットプレイスの画面で imozuru の自動更新を入れてください。
+手で更新するときは `claude plugin marketplace update imozuru` を流します。
+
+### skills のCLI
+
+[skills](https://github.com/vercel-labs/skills) のCLIでも入れられます。
 
 ```sh
 npx skills add MaryCache/imozuru

@@ -49,7 +49,22 @@ In watch mode, it collects new posts from the venues a dig turned up (Qiita and 
 
 ## Install
 
-Install with the [skills](https://github.com/vercel-labs/skills) CLI.
+### As a Claude Code plugin
+
+Add this repository as a marketplace and install the plugin.
+
+```text
+/plugin marketplace add MaryCache/imozuru
+/plugin install imozuru@imozuru
+```
+
+The plugin carries no version number, so every commit to main counts as a new version.
+To stay up to date automatically, turn on auto-update for imozuru in the marketplace screen of `/plugin`.
+To update by hand, run `claude plugin marketplace update imozuru`.
+
+### With the skills CLI
+
+You can also install it with the [skills](https://github.com/vercel-labs/skills) CLI.
 
 ```sh
 npx skills add MaryCache/imozuru

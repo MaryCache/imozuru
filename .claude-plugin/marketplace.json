@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "imozuru",
+  "description": "imozuru のマーケットプレイス",
+  "owner": {
+    "name": "MaryCache"
+  },
+  "plugins": [
+    {
+      "name": "imozuru",
+      "description": "知らない分野を、原文にたどりつくまで芋づる式に掘るスキル",
+      "author": {
+        "name": "MaryCache"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/MaryCache/imozuru",
+      "repository": "https://github.com/MaryCache/imozuru",
+      "license": "MIT"
+    }
+  ]
+}

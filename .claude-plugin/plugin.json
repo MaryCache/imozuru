@@ -1,0 +1,13 @@
+{
+  "name": "imozuru",
+  "description": "知らない分野を、原文にたどりつくまで芋づる式に掘るスキル",
+  "skills": "./skills/",
+  "author": {
+    "name": "MaryCache",
+    "url": "https://github.com/MaryCache"
+  },
+  "homepage": "https://github.com/MaryCache/imozuru",
+  "repository": "https://github.com/MaryCache/imozuru",
+  "license": "MIT",
+  "keywords": ["research", "information-seeking", "literature-review", "source-discovery"]
+}
