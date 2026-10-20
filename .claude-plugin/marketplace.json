@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "imozuru",
-  "description": "imozuru のマーケットプレイス",
+  "name": "MaryCache",
+  "description": "MaryCache のマーケットプレイス",
   "owner": {
     "name": "MaryCache"
   },

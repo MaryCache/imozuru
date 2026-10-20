@@ -55,12 +55,12 @@ Add this repository as a marketplace and install the plugin.
 
 ```text
 /plugin marketplace add MaryCache/imozuru
-/plugin install imozuru@imozuru
+/plugin install imozuru@MaryCache
 ```
 
 The plugin carries no version number, so every commit to main counts as a new version.
-To stay up to date automatically, turn on auto-update for imozuru in the marketplace screen of `/plugin`.
-To update by hand, run `claude plugin marketplace update imozuru`.
+To stay up to date automatically, turn on auto-update for MaryCache in the marketplace screen of `/plugin`.
+To update by hand, run `claude plugin marketplace update MaryCache`.
 
 ### With the skills CLI
 
