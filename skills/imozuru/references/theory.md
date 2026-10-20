@@ -1,6 +1,6 @@
 # imozuru の拠りどころ
 
-SKILL.md の各決まりが、どの原文のどこから来たか。原文は 2026-10-09 の試し（題材＝探し方の研究）で
+SKILL.md の各決まりが、どの原文のどこから来たか。原文は 2026-10-09 の試行（題材＝探し方の研究）で
 このスキル自身を使って落とした。行番号は、下の URL を `scripts/fetch.py` で落とした .txt / .md のもの
 （PDF は `pdftotext -layout`、HTML は ax で変換。変換の仕方が違うと行番号はずれるので、短い引用で探す）。
 決まりを直すときは、ここで元の文を読み直してから直す。
@@ -35,7 +35,7 @@ SKILL.md の各決まりが、どの原文のどこから来たか。原文は 2
 | 知らない用語は粒度の粗い順に＝百科事典 → 専門事典 → 教科書・講義資料 → サーベイ → 原著 | 横井祥 2017 「Examine the meaning of unknown terms」（Speaker Deck） | `eumesy-unknown-terms.md` L343-373 |
 | 情報の匂い（information scent）で次にたどる先を選ぶ | Pirolli & Card 1999 "Information foraging"（本体は有料・DOI 10.1037/0033-295x.106.4.643） | 未取得。LLM に当てた例は `arxiv-2505.09316-scent-of-knowledge.txt` |
 
-## 試しで分かった、流れの側の事実
+## 試行で分かった、流れの側の事実
 
 - 検索結果の URL は古い。11 本中 5 本が 404・ログインの壁・PDF のふりをした HTML → `fetch.py` で中身を見て判定する
 - LLM の検索エージェントの論文3本の参考文献に、人の情報探索の研究（Bates・Kuhlthau・Ellis・Marchionini）は0件、情報採餌理論が1件だけ。AI 側はこの蓄積をほとんど使っていない
