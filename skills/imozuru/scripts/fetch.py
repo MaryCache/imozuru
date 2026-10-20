@@ -269,7 +269,8 @@ def html_to_md(url: str, out: Path, body: bytes | None = None, ctype: str = "") 
     ctype は body の Content-Type。文字コードの名乗りを読むのに使う。
     """
     if HAS_AX:
-        res = subprocess.run(["ax", url, "--md", "--all"], capture_output=True,
+        # URL は「--」の後ろに置く。「-」で始まる文字列をオプションとして読ませない
+        res = subprocess.run(["ax", "--md", "--all", "--", url], capture_output=True,
                              encoding="utf-8", errors="replace")
         text = res.stdout
     else:
@@ -294,7 +295,7 @@ def ax_save(url: str, out: Path) -> bool:
     ax が無いときは urllib で取り直す。
     """
     if HAS_AX:
-        subprocess.run(["ax", url, "-o", str(out)], capture_output=True)
+        subprocess.run(["ax", "-o", str(out), "--", url], capture_output=True)
     else:
         try:
             out.write_bytes(download(url)[0])
@@ -335,7 +336,7 @@ def youtube_to_md(url: str, out: Path) -> str:
             ["yt-dlp", "--no-update", "--skip-download", flag, "--encoding", "utf-8",
              "--sub-langs", langs, "--sub-format", "vtt", "--no-simulate",
              "--print", "%(title)s\t%(uploader)s\t%(upload_date)s\t%(language|)s",
-             "-o", str(tmp / "v.%(ext)s"), url],
+             "-o", str(tmp / "v.%(ext)s"), "--", url],
             capture_output=True, encoding="utf-8", errors="replace")
         if any(tmp.glob("*.vtt")):
             break

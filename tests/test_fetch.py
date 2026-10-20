@@ -201,6 +201,40 @@ class FetchPreservationTests(unittest.TestCase):
         self.assertIn("http(s) の URL だけを取りに行く", self.stdout.getvalue())
 
 
+class OptionInjectionTests(unittest.TestCase):
+    """外のコマンドへ渡す URL は「--」の直後に置く。「-」で始まる URL をオプションとして読ませない。"""
+
+    URL = "--exec=touch /tmp/pwned"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = Path(tmp.name) / "page.md"
+
+    def capture(self, call):
+        with patch.object(fetch.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            call()
+        return [c.args[0] for c in run.call_args_list]
+
+    def assert_url_after_separator(self, cmds):
+        self.assertTrue(cmds)
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(cmd[-2:], ["--", self.URL])
+
+    def test_ax_markdown(self):
+        with patch.object(fetch, "HAS_AX", True):
+            self.assert_url_after_separator(self.capture(lambda: fetch.html_to_md(self.URL, self.out)))
+
+    def test_ax_save(self):
+        with patch.object(fetch, "HAS_AX", True):
+            self.assert_url_after_separator(self.capture(lambda: fetch.ax_save(self.URL, self.out)))
+
+    def test_yt_dlp(self):
+        self.assert_url_after_separator(self.capture(lambda: fetch.youtube_to_md(self.URL, self.out)))
+
+
 class YoutubeCaptionTests(unittest.TestCase):
     """yt-dlp の呼び出しを差し替えて、どの字幕を指定するかを検査する。"""
 
