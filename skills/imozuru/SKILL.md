@@ -229,7 +229,7 @@ map.md を下の書式で作り、**問い**と、答えるのに要る**主張*
 - 動画の場所は行番号の代わりに時刻で指す（`sources/x.md [12:34]`）
 - `scripts/report.py <topic_dir> [--check]` — extracts.json の抜き書きを原文と照合し、合えば report.html にする。`--check` は照合だけ
 - `scripts/watch.py add|list|check` — 見張り。RSS / Atom を引いて前回からの新着を出す。検索を使わないので費用はかからず結果も揺れない。DOCTYPE・ENTITY を含むフィードは安全のため読まない。フィードの場所にタブや改行が入っていたら足さない
-- `scripts/chain.py find|refs|cites|author` — OpenAlex で引用と著者をたどる。1日 1,000 回まで無料の枠で、プリペイド残高が 0 なら超えても止まるだけ。**API キーや支払いの登録はしない**。古めの論文に強く、新しい論文と同名の多い著者に弱い（author は同名の別人の論文を返すことがある）
+- `scripts/chain.py find|refs|cites|author` — OpenAlex で引用と著者をたどる。1日 1,000 回まで無料の枠で、プリペイド残高が 0 なら超えても止まるだけ。**API キーや支払いの登録はしない**。古めの論文に強く、新しい論文と同名の多い著者に弱い（author は名前の検索の1位を使うので、同名の別人の論文を返すことがある。出力の「# 別の候補」に別人の ID が並ぶので、所属と論文数で確かめ、違えば `chain.py author A…` で引き直す）
 - ファイル名は `<著者>-<年>-<短い題>`、arXiv は `arxiv-<番号>-<短い題>`
 
 ## 境界

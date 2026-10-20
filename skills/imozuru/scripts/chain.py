@@ -11,7 +11,8 @@ OpenAlex は1日 1,000 回まで無料の枠（x-ratelimit-limit-usd 0.1）。�
     chain.py find  <DOI か題名>          … 論文を特定して ID を出す（題名なら候補5件）
     chain.py refs  <ID か DOI> [-n 20]    … 後ろへ: その論文が引いている文献
     chain.py cites <ID か DOI> [-n 20]    … 前へ: その論文を引いている文献（被引用の多い順）
-    chain.py author <著者名> [-n 20]      … 著者で追う: その人の論文（被引用の多い順）
+    chain.py author <著者名か著者ID> [-n 20] … 著者で追う: その人の論文（被引用の多い順）
+                                            名前なら「# 別の候補」の行に同名の別人の ID も出す
 出力: 1行1本、タブ区切り（年 被引用数 ID 題名 DOI 無料PDF）
 """
 
@@ -24,6 +25,7 @@ import urllib.request
 API = "https://api.openalex.org"
 # OpenAlex の work ID（W と数字だけ）。「Weak …」のような題名と取り違えないよう、形で見分ける
 WORK_ID = re.compile(r"W\d+")
+AUTHOR_ID = re.compile(r"A\d+")
 FIELDS = "id,display_name,publication_year,cited_by_count,doi,best_oa_location"
 # API の応答の大きさの上限。200本の一覧でも数百 KB に収まる。
 MAX_BYTES = 20_000_000
@@ -65,8 +67,16 @@ def clean(s: object) -> str:
 
     題名や著者名は論文の著者や登録者が書く。タブや改行が残ると列や行が増え、エージェントが表を読み違える。
     端末を操る ESC の並びも、ここで消す。
+    文字の向きを変える制御文字（U+202E など）と幅の無い空白も消す。題名の一部を逆向きに見せたり、
+    見た目が同じで中身の違う文字列を作ったりできる。ZWJ・ZWNJ は絵文字や一部の文字で要るので残す。
     """
-    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  ]+", " ", str(s)).strip()
+    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  \u200b\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]+", " ", str(s)).strip()
+
+
+def author_line(a: dict, aid: str) -> str:
+    """著者1人を「名前 ID 所属 論文数」の1行にする。"""
+    inst = ", ".join(clean(i.get("display_name") or "") for i in a.get("last_known_institutions") or [])
+    return f"{clean(a.get('display_name') or '')} {aid} {inst} 論文{clean(a.get('works_count'))}本"
 
 
 def search_title(key: str) -> list[dict]:
@@ -80,7 +90,10 @@ def search_title(key: str) -> list[dict]:
     だけ）。全部の語では0件になるので、0件なら前半の3語で引き直す。
     """
     words = key.replace(",", " ").replace(":", " ").split()
-    for terms in (words, words[:3]):
+    if not words:  # 空の条件で問い合わせると、題名を絞らない検索になる
+        return []
+    # 3語以下なら前半の3語は全部と同じ。同じ問い合わせを2回送って枠を使わない
+    for terms in (words, words[:3]) if len(words) > 3 else (words,):
         hits = get("/works", filter="title.search:" + " ".join(terms),
                    sort="cited_by_count:desc", **{"per-page": 5}, select=FIELDS)["results"]
         if hits:
@@ -98,16 +111,16 @@ def resolve(key: str) -> dict:
     if WORK_ID.fullmatch(key) or "openalex.org/" in key:
         wid = key.rstrip("/").rsplit("/", 1)[-1]
         if not WORK_ID.fullmatch(wid):
-            raise SystemExit(f"OpenAlex の ID の形ではない: {key}")
+            raise SystemExit(f"OpenAlex の ID の形ではない: {clean(key)}")
         return get(f"/works/{wid}", select=FIELDS)
     if key.startswith("10.") or "doi.org/" in key:
         doi = urllib.parse.unquote(key.split("doi.org/")[-1]) if "doi.org/" in key else key
         if any(part in {".", ".."} for part in doi.split("/")):
-            raise SystemExit(f"DOI に「.」か「..」の区切りがある: {key}")
+            raise SystemExit(f"DOI に「.」か「..」の区切りがある: {clean(key)}")
         return get(f"/works/doi:{urllib.parse.quote(doi, safe='/')}", select=FIELDS)
     hits = search_title(key)
     if not hits:
-        raise SystemExit(f"見つからない: {key}")
+        raise SystemExit(f"見つからない: {clean(key)}")
     return hits[0]
 
 
@@ -141,7 +154,7 @@ def main() -> int:
         # 題名のときは候補を全部見せる。どれが本体かを読み手が確かめられるように。
         hits = [resolve(key)] if WORK_ID.fullmatch(key) or key.startswith("10.") or "/" in key else search_title(key)
         if not hits:
-            print(f"候補なし: {key}（DOI で引き直すか、題名の語を減らす）")
+            print(f"候補なし: {clean(key)}（DOI で引き直すか、題名の語を減らす）")
         for w in hits:
             print(row(w))
     elif cmd in ("refs", "cites"):
@@ -156,15 +169,21 @@ def main() -> int:
         for w in res["results"]:
             print(row(w))
     elif cmd == "author":
-        hits = get("/authors", search=key, **{"per-page": 1})["results"]
+        # 著者 ID（A と数字）ならその人を直接引く。名前なら検索の1位を使い、ほかの候補も並べる。
+        # 名前だけでは同姓同名を見分けられないので、別人だったら候補の ID で引き直せるようにする
+        if AUTHOR_ID.fullmatch(key):
+            hits = [get(f"/authors/{key}")]
+        else:
+            hits = get("/authors", search=key, **{"per-page": 5})["results"]
         if not hits:
-            raise SystemExit(f"著者が見つからない: {key}")
-        a = hits[0]
-        aid = (a.get("id") or "").rsplit("/", 1)[-1]
-        if not re.fullmatch(r"A\d+", aid):
-            raise SystemExit(f"応答の著者 ID の形がおかしい: {clean(aid)}")
-        inst = ", ".join(clean(i.get("display_name") or "") for i in a.get("last_known_institutions") or [])
-        print(f"# author {clean(a.get('display_name') or '')} {aid} {inst} 論文{clean(a.get('works_count'))}本")
+            raise SystemExit(f"著者が見つからない: {clean(key)}")
+        ids = [(a.get("id") or "").rsplit("/", 1)[-1] for a in hits]
+        if not all(AUTHOR_ID.fullmatch(i) for i in ids):
+            raise SystemExit(f"応答の著者 ID の形がおかしい: {clean(' '.join(ids))}")
+        a, aid = hits[0], ids[0]
+        print(f"# author {author_line(a, aid)}")
+        for other, oid in zip(hits[1:], ids[1:]):
+            print(f"# 別の候補 {author_line(other, oid)}（この人なら chain.py author {oid}）")
         res = get("/works", filter=f"author.id:{aid}", sort="cited_by_count:desc",
                   **{"per-page": n}, select=FIELDS)
         for w in res["results"]:

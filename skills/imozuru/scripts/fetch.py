@@ -59,6 +59,9 @@ WALL_PATTERNS = (
     "enable javascript",
     "are you a robot",
     "captcha",
+    # Anubis（ボット除けの計算をさせるページ）。HAL などが使う。中身の無い 1,000 字ほどのページが
+    # HTML の下限を越えて OK になった（2026-10-20）
+    "you're not a bot",
 )
 
 
@@ -617,8 +620,9 @@ def clean(s: str) -> str:
 
     他人が決めた文字列（本文・転送先の URL・HTTP のエラーの文）は、1行の出力の列や行を増やしたり、
     端末を操ったりできる（2026-10-20 の2回目のレビュー）。
+    文字の向きを変える制御文字（U+202E など）と幅の無い空白も消す。ZWJ・ZWNJ は絵文字や一部の文字で要るので残す。
     """
-    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  ]+", " ", s).strip()
+    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  \u200b\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]+", " ", s).strip()
 
 
 def first_line(text: str) -> str:

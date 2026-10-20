@@ -246,7 +246,7 @@ def md_text(s: str) -> str:
 
 def clean(s: str) -> str:
     """制御文字（端末を操る ESC の並び）と改行の仲間を空白にする。fetch.py の clean と同じ。"""
-    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  ]+", " ", s).strip()
+    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  \u200b\u200e\u200f\u202a-\u202e\u2060-\u2069\ufeff]+", " ", s).strip()
 
 
 def md_link(url: str) -> str:

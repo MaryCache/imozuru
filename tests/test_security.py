@@ -557,5 +557,65 @@ class SecondRoundTests(unittest.TestCase):
             self.assertTrue(report.verify(src, {"file": "a.md", "line": 1, "end": None, "text": "first line"})[0])
 
 
+class DeepSeekSplitReviewTests(unittest.TestCase):
+    """2026-10-20、DeepSeek に1ファイルずつ読ませたレビューで当たったもの。"""
+
+    def test_bidi_controls_are_removed(self):
+        for module in (fetch, watch, chain):
+            with self.subTest(module=module.__name__):
+                self.assertEqual(module.clean("abc‮def​g﻿"), "abc def g")
+                # 絵文字の並びや一部の文字に要る ZWJ・ZWNJ は残す
+                self.assertEqual(module.clean("a‍b‌c"), "a‍b‌c")
+
+    def test_short_title_is_queried_once(self):
+        with patch.object(chain, "get", return_value={"results": []}) as get:
+            self.assertEqual(chain.search_title("Exploratory search"), [])
+        self.assertEqual(get.call_count, 1)
+
+    def test_empty_title_is_not_queried(self):
+        with patch.object(chain, "get") as get:
+            self.assertEqual(chain.search_title(" : , "), [])
+        get.assert_not_called()
+
+    def test_author_lists_other_candidates_and_accepts_an_id(self):
+        people = [{"id": f"https://openalex.org/A{i}", "display_name": "Same Name", "works_count": i,
+                   "last_known_institutions": [{"display_name": f"Inst {i}"}]} for i in (1, 2)]
+        calls = []
+
+        def get(path, **params):
+            calls.append(path)
+            if path == "/authors":
+                return {"results": people}
+            if path == "/authors/A2":
+                return people[1]
+            return {"results": []}
+
+        with patch.object(chain, "get", side_effect=get), \
+                patch.object(sys, "argv", ["chain.py", "author", "Same Name"]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            chain.main()
+        self.assertIn("# 別の候補 Same Name A2 Inst 2", out.getvalue())
+        self.assertIn("chain.py author A2", out.getvalue())
+
+        with patch.object(chain, "get", side_effect=get), \
+                patch.object(sys, "argv", ["chain.py", "author", "A2"]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            chain.main()
+        self.assertIn("# author Same Name A2", out.getvalue())
+        self.assertIn("/authors/A2", calls)
+
+    def test_anubis_page_is_a_wall(self):
+        page = ("# Making sure you're not a bot!\n\nLoading...\n\n"
+                + "You are seeing this because the administrator set up Anubis. " * 20)
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as out, \
+                patch.object(fetch, "download", return_value=(b"<html>anubis</html>", "text/html")), \
+                patch.object(fetch, "html_to_md", side_effect=lambda url, o, *a: (o.write_text(page), page)[1]), \
+                patch.object(fetch, "pdf_save", return_value=False), \
+                patch.object(fetch, "resolve", lambda host: {PUBLIC_IP}), \
+                patch.object(sys, "argv", ["fetch.py", tmp, "paper", "https://example.test/x"]):
+            self.assertEqual(fetch.main(), 1)
+        self.assertIn("壁に当たった（you're not a bot）", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
