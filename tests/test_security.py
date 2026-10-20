@@ -222,6 +222,19 @@ class ToolLimitTests(unittest.TestCase):
                 self.assertEqual(fetch.html_to_md("https://example.test/", Path(tmp) / "h.md",
                                                   b"<p>x</p>", "text/html"), "")
 
+    def test_failed_pdftotext_leaves_no_partial_text(self):
+        """pdftotext が途中で失敗したら、書きかけの .txt を使わない。"""
+        def failed(cmd, **kwargs):
+            Path(cmd[-1]).write_text("first half " * 500, encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 1)
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch, "run_tool", side_effect=failed), \
+                patch.object(fetch, "missing", return_value=[]):
+            pdf = Path(tmp) / "a.pdf"
+            pdf.write_bytes(b"%PDF-1.4")
+            self.assertEqual(fetch.pdf_to_text(pdf), "")
+            self.assertFalse(pdf.with_suffix(".txt").exists())
+
     def test_ocr_page_cap(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(fetch, "run_tool", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \

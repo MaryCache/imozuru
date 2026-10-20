@@ -338,8 +338,9 @@ def pdf_to_text(pdf: Path) -> str:
     out = pdf.with_suffix(".txt")
     done = run_tool(["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)],
                     stderr=subprocess.DEVNULL)
-    # 時間切れの書きかけと、圧縮を解くと何 GB にもなる PDF の文字は使わない
-    if done is None or (out.exists() and out.stat().st_size > MAX_BYTES):
+    # 時間切れの書きかけ、途中で失敗した書きかけ、圧縮を解くと何 GB にもなる PDF の文字は使わない。
+    # 書きかけを使うと、後半を引用できないのに「原文に無い」と読み違える
+    if done is None or done.returncode != 0 or (out.exists() and out.stat().st_size > MAX_BYTES):
         out.unlink(missing_ok=True)
         return ""
     return out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
@@ -687,6 +688,8 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     except Exception as e:  # HTTP エラーも接続失敗も、呼び手にとっては同じ「取れない」
         print(f"FAIL\t{name}\t{type(e).__name__}: {clean(str(e))}")
         return 1
+    # メディアタイプは大文字と小文字を区別しない。「Text/Plain」で返すサーバーもある
+    ctype = ctype.lower()
 
     if not body.strip():
         # 中身の無い 200/202 を返すサーバーがある（Cornell の論文置き場・2026-10-10）。
@@ -718,12 +721,18 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         # ax を使っていたころと同じく、HTML のページには2回頼むことになる
         pdf = sources / f"{name}.pdf"
         if pdf_save(url, pdf) and pdf.read_bytes()[:5] == b"%PDF-":
-            kept.unlink(missing_ok=True)
-            saved = pdf
-            text = pdf_to_text(saved)
-            kept = saved.with_suffix(".txt")
-            if len(text.strip()) < 200:
-                text = ocr_if_longer(saved, text)
+            pdf_text = pdf_to_text(pdf)
+            if len(pdf_text.strip()) < 200:
+                pdf_text = ocr_if_longer(pdf, pdf_text)
+            pdf_floor = MIN_HTML_CHARS if mostly_cjk(pdf_text) else MIN_TEXT_CHARS
+            # PDF の本文が下限に届いたときだけ PDF に切り替える。届かないなら HTML の本文を残す。
+            # 先に HTML を消すと、PDF が文字の層の無い画像だったときに両方を失う（2026-10-20 のレビュー）
+            if len(pdf_text) >= pdf_floor or text.lstrip().startswith("%PDF"):
+                kept.unlink(missing_ok=True)
+                saved, text, kept = pdf, pdf_text, pdf.with_suffix(".txt")
+            else:
+                pdf.unlink(missing_ok=True)
+                pdf.with_suffix(".txt").unlink(missing_ok=True)
         else:
             pdf.unlink(missing_ok=True)
             if text.lstrip().startswith("%PDF"):
@@ -738,10 +747,21 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     # COLE・Accordion）。同じ論文の HTML 版なら取れたので、短いときだけ切り替える。
     paper = arxiv_id(url)
     if paper and len(text) < MIN_TEXT_CHARS:
-        for p in (saved, kept):
-            p.unlink(missing_ok=True)
-        kept = saved = sources / f"{name}.md"
-        text = html_to_md(f"https://arxiv.org/html/{paper}", kept)
+        # HTML 版は別の名前に取ってから比べる。先に元を消すと、HTML 版が取れなかったときに何も残らない。
+        # 元が abs ページの .md だと同じ名前になるので、一時の名前を使う
+        trial = sources / f".{name}-arxiv.md"
+        try:
+            html_text = html_to_md(f"https://arxiv.org/html/{paper}", trial)
+        except Exception:  # HTML 版が無い論文もある。そのときは元のまま下限で判定する
+            html_text = ""
+        if len(html_text) > len(text):
+            for p in (saved, kept):
+                p.unlink(missing_ok=True)
+            kept = saved = sources / f"{name}.md"
+            trial.replace(kept)
+            text = html_text
+        else:
+            trial.unlink(missing_ok=True)
 
     # PDF は英語の論文を基準に高い下限。和文の PDF だけは HTML と同じ下限にする
     floor = MIN_TEXT_CHARS if saved.suffix == ".pdf" and not mostly_cjk(text) else MIN_HTML_CHARS

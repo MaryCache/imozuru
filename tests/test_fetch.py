@@ -154,6 +154,36 @@ class FetchPreservationTests(unittest.TestCase):
         self.assertEqual((self.sources / "paper.pdf").read_bytes(), pdf)
         self.assertFalse((self.sources / "paper.md").exists())
 
+    def test_image_only_pdf_keeps_the_html_text(self):
+        """名乗りを変えて取れた PDF が文字の層の無い画像なら、HTML の本文を残す。"""
+        def download(url, user_agent=fetch.BROWSER_UA):
+            return (b"%PDF-1.4\nscan", "application/pdf") if user_agent == fetch.PLAIN_UA \
+                else (b"<html>page</html>", "text/html")
+
+        with patch.object(fetch, "download", side_effect=download), \
+                patch.object(fetch, "html_to_md", side_effect=self.markdown("Article body. " * 200)), \
+                patch.object(fetch, "pdf_to_text", side_effect=self.pdf_text("")), \
+                patch.object(fetch, "ocr_pdf", return_value=""):
+            self.assertEqual(self.run_fetch(), 0)
+        self.assertIn("Article body.", (self.sources / "paper.md").read_text(encoding="utf-8"))
+        self.assertFalse((self.sources / "paper.pdf").exists())
+
+    def test_arxiv_html_error_keeps_the_pdf_text(self):
+        """arXiv の HTML 版が取れなくても、先に取れた PDF の本文は残す。"""
+        text = "Short but real PDF text. " * 80  # 2000字。下限の3000字には届かない
+        with patch.object(fetch, "download", return_value=(b"%PDF-1.4\npaper", "application/pdf")), \
+                patch.object(fetch, "pdf_to_text", side_effect=self.pdf_text(text)), \
+                patch.object(fetch, "html_to_md", side_effect=OSError("404")):
+            self.assertEqual(self.run_fetch("https://arxiv.org/pdf/2601.12345"), 1)
+        self.assertIn("本文が短すぎる（2000文字）", self.stdout.getvalue())
+        self.assertFalse(any(p.name.startswith(".") for p in self.sources.iterdir()))
+
+    def test_media_type_is_case_insensitive(self):
+        body = b"Plain text line\n" * 100
+        with patch.object(fetch, "download", return_value=(body, "Text/Plain; Charset=UTF-8")):
+            self.assertEqual(self.run_fetch(), 0)
+        self.assertEqual((self.sources / "paper.md").read_bytes(), body)
+
     def test_successful_text_retry_replaces_source_and_reports_final_path(self):
         for ctype, suffix in (("text/plain", ".md"), ("text/markdown", ".md"),
                               ("application/json", ".json"), ("text/csv", ".csv")):
