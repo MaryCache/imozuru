@@ -18,8 +18,10 @@
 
 import codecs
 import ipaddress
+import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -100,23 +102,56 @@ def url_problem(url: str) -> str | None:
     sources/ に写してしまう（2026-10-20 のレビュー）。名前を引いた先が全部インターネット上の
     宛先のときだけ通す。10進や16進で書いた IP も、名前を引けば 127.0.0.1 などになるので同じく止まる。
     名前を引いてから接続するまでの間に引き先を変える手（DNS rebinding）は防げない。
+
+    ホストの部分に「@」か「%」があれば断る。urlsplit は「x@a.example」の a.example を見るが、
+    urllib は x@a.example をそのまま引き、「%61」は urllib だけが a に戻す。検査とつなぐ先がずれる。
+    VPN などで外の名前まで内側の宛先に引ける環境では、環境変数 IMOZURU_ALLOW_PRIVATE=1 で
+    宛先の検査だけを外せる（http(s) の検査は残る）。
     """
-    p = urllib.parse.urlsplit(url)
+    try:
+        p = urllib.parse.urlsplit(url)
+        host = p.hostname
+    except ValueError:
+        return "URL の形が壊れている"
     if p.scheme.lower() not in {"http", "https"}:
         return "http(s) の URL だけを取りに行く"
-    if not p.hostname:
+    if not host:
         return "URL にホストが無い"
+    if "@" in p.netloc or "%" in p.netloc:
+        return "URL のホストに「@」か「%」が入っている"
+    if os.environ.get("IMOZURU_ALLOW_PRIVATE") == "1":
+        return None
     try:
-        addrs = resolve(p.hostname)
-    except (OSError, UnicodeError) as e:
+        addrs = resolve(host)
+    except (OSError, UnicodeError, ValueError) as e:
         return f"ホストを引けない（{e}）"
     for addr in addrs:
-        ip = ipaddress.ip_address(addr.split("%", 1)[0])  # IPv6 の %eth0 のような印を外す
-        if getattr(ip, "ipv4_mapped", None):
-            ip = ip.ipv4_mapped
-        if not ip.is_global:
-            return f"手元や内側の宛先（{ip}）には取りに行かない"
+        for ip in _addresses_inside(ipaddress.ip_address(addr.split("%", 1)[0])):  # IPv6 の %eth0 を外す
+            if not ip.is_global:
+                return (f"手元や内側の宛先（{ip}）には取りに行かない"
+                        "（VPN などで外の名前も内側に引ける環境なら IMOZURU_ALLOW_PRIVATE=1 で外せる）")
     return None
+
+
+def _addresses_inside(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> list:
+    """IP と、その IPv6 の中に埋め込まれた IPv4 を返す。
+
+    64:ff9b::7f00:1（NAT64）や ::127.0.0.1 は IPv6 としては「インターネット上」に数えられるが、
+    中の IPv4 は 127.0.0.1。NAT64 のある回線では手元へ届く（2026-10-20 の2回目のレビュー）。
+    """
+    found = [ip]
+    if ip.version == 6:
+        low32 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if ip.ipv4_mapped:
+            found.append(ip.ipv4_mapped)
+        if ip.sixtofour:
+            found.append(ip.sixtofour)
+        if ip.teredo:
+            found.extend(ip.teredo)
+        if (ip in ipaddress.ip_network("::/96") or ip in ipaddress.ip_network("64:ff9b::/96")
+                or ip in ipaddress.ip_network("64:ff9b:1::/48")):
+            found.append(low32)
+    return found
 
 
 def ascii_url(url: str) -> str:
@@ -132,26 +167,63 @@ def ascii_url(url: str) -> str:
     return urllib.parse.urlunsplit((p.scheme, p.netloc, path, query, p.fragment))
 
 
-def download(url: str) -> tuple[bytes, str]:
+# ふだんの名乗り。ブラウザでないと本文を返さないサイトがあるので、ブラウザの形で始める。
+BROWSER_UA = "Mozilla/5.0 imozuru"
+# HAL（hal.science）は、ブラウザの名乗りには閲覧用の HTML を、それ以外の名乗りには PDF を返す。
+# PDF を頼み直すときはこちらで名乗る（2026-10-20 に確かめた）。
+PLAIN_UA = "imozuru"
+
+
+def download(url: str, user_agent: str = BROWSER_UA) -> tuple[bytes, str]:
     """URL を取りに行き、本体と Content-Type を返す。
 
-    MAX_BYTES を超える本体は途中で切らずに取得ごと失敗にする。切れた原文を OK として残すと、
-    後ろの部分を引用できないのに「原文に無い」と読み違える。
+    MAX_BYTES を超える本体や、Content-Length に届かずに切れた本体は、取得ごと失敗にする。
+    切れた原文を OK として残すと、後ろの部分を引用できないのに「原文に無い」と読み違える。
+    read(n) は接続が途中で切れても例外を出さないので、残りの長さ（res.length）で確かめる。
     """
     problem = url_problem(url)
     if problem:
         raise UnsafeURL(problem)
-    req = urllib.request.Request(ascii_url(url), headers={"User-Agent": "Mozilla/5.0 imozuru"})
+    req = urllib.request.Request(ascii_url(url), headers={"User-Agent": user_agent})
     with _OPENER.open(req, timeout=90) as res:
         body = res.read(MAX_BYTES + 1)
         if len(body) > MAX_BYTES:
             raise ValueError(f"本体が {MAX_BYTES:,} バイトを超える")
+        if isinstance(res.length, int) and res.length > 0:
+            raise ValueError("本体が途中で切れた")
         return body, res.headers.get("Content-Type", "")
+
+
+def pdf_save(url: str, out: Path) -> bool:
+    """名乗りを変えて頼み直し、PDF が返ってきたら out に保存して True を返す。
+
+    前は ax に取り直させていた（ax の名乗りは Bun/…）。ax は自分で通信し、転送の先を
+    こちらで確かめられないので、検査つきの download で頼み直す。
+    """
+    try:
+        body, _ = download(url, user_agent=PLAIN_UA)
+    except Exception:  # 取れなければ HTML のまま進める
+        return False
+    if body[:5] != b"%PDF-":
+        return False
+    out.write_bytes(body)
+    return True
 
 
 # Shift_JIS と名乗るページの多くは実際には Windows の拡張（①・髙 など）を含むので、上位互換の cp932 で読む
 _CHARSET_ALIASES = {"shift_jis": "cp932", "shift-jis": "cp932", "sjis": "cp932", "x-sjis": "cp932",
                     "windows-31j": "cp932", "ms_kanji": "cp932"}
+# 名乗りを信じてよい文字コード。文書に使われるものだけに絞る。名乗りはページを書いた他人が決めるので、
+# punycode のように長さの2乗の時間がかかるもの（40MB で何時間も止まる）や、utf-7・unicode_escape の
+# ように文書の文字コードではないものを試させない（2026-10-20 の2回目のレビュー）。
+_DOCUMENT_CODECS = {codecs.lookup(n).name for n in (
+    "utf-8", "utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be",
+    "ascii", "cp932", "shift_jis", "euc_jp", "euc_jis_2004", "iso2022_jp", "iso2022_jp_2",
+    "gb2312", "gbk", "gb18030", "big5", "big5hkscs", "euc_kr", "cp949", "iso2022_kr",
+    "latin-1", "iso8859_2", "iso8859_3", "iso8859_4", "iso8859_5", "iso8859_6", "iso8859_7",
+    "iso8859_8", "iso8859_9", "iso8859_10", "iso8859_13", "iso8859_14", "iso8859_15", "iso8859_16",
+    "cp1250", "cp1251", "cp1252", "cp1253", "cp1254", "cp1255", "cp1256", "cp1257", "cp1258",
+    "koi8_r", "koi8_u", "mac_roman", "tis_620", "cp874")}
 # 先頭の BOM で分かる文字コード。UTF-32 の BOM は UTF-16 の BOM で始まるので先に見る
 _BOMS = ((codecs.BOM_UTF8, "utf-8-sig"), (codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
          (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"))
@@ -176,8 +248,8 @@ def decode_text(body: bytes, ctype: str = "") -> str:
 
     UTF-8 を名乗りより先に試すのは、latin-1 のようにどんな並びでも読めてしまう名乗りがあるため。
     UTF-8 の文法に合う並びは、ほかの文字コードの文章からはまず偶然には生まれない。
-    名乗りはページを書いた他人が決めるので、zlib や base64 のような文字コードでないものは飛ばす
-    （名乗るだけで fetch.py が LookupError で止まった・2026-10-20 のレビュー）。
+    名乗りはページを書いた他人が決めるので、_DOCUMENT_CODECS に無いものは飛ばす
+    （zlib_codec と名乗るだけで fetch.py が LookupError で止まった・2026-10-20 のレビュー）。
     """
     for bom, codec in _BOMS:
         if body.startswith(bom):
@@ -191,7 +263,7 @@ def decode_text(body: bytes, ctype: str = "") -> str:
             info = codecs.lookup(name)
         except LookupError:  # 知らない名乗り（x-user-defined など）は飛ばす
             continue
-        if not getattr(info, "_is_text_encoding", True):
+        if info.name not in _DOCUMENT_CODECS:
             continue
         if info.name not in candidates:
             candidates.append(info.name)
@@ -220,12 +292,39 @@ def missing(*commands: str) -> list[str]:
     return [c for c in commands if shutil.which(c) is None]
 
 
-def run_tool(cmd: list[str], **kwargs) -> subprocess.CompletedProcess | None:
-    """外のコマンドを TOOL_TIMEOUT 秒の上限つきで動かす。上限を超えたら止めて None を返す。"""
-    try:
-        return subprocess.run(cmd, timeout=TOOL_TIMEOUT, **kwargs)
-    except subprocess.TimeoutExpired:
-        return None
+def run_tool(cmd: list[str], capture_output: bool = False, **kwargs) -> subprocess.CompletedProcess | None:
+    """外のコマンドを TOOL_TIMEOUT 秒の上限つきで動かす。上限を超えたら子の処理ごと止めて None を返す。
+
+    subprocess.run の timeout は、直接動かしたコマンドしか止めない。Windows で ax や yt-dlp が
+    .cmd を経由して動くと、孫の処理が出力の管をつかんだまま残り、run が戻らなくなる
+    （2026-10-20 の2回目のレビュー）。新しい組で動かし、時間切れのときは組ごと止める。
+    """
+    if capture_output:
+        kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    with subprocess.Popen(cmd, **kwargs) as proc:
+        try:
+            out, err = proc.communicate(timeout=TOOL_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            return None
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """proc と、そこから動いた処理をまとめて止める。管は読まない（孫がつかんでいると戻らない）。"""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    proc.wait()
 
 
 def pdf_to_text(pdf: Path) -> str:
@@ -237,8 +336,12 @@ def pdf_to_text(pdf: Path) -> str:
     if missing("pdftotext"):
         return ""
     out = pdf.with_suffix(".txt")
-    run_tool(["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)], check=False,
-             stderr=subprocess.DEVNULL)
+    done = run_tool(["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)],
+                    stderr=subprocess.DEVNULL)
+    # 時間切れの書きかけと、圧縮を解くと何 GB にもなる PDF の文字は使わない
+    if done is None or (out.exists() and out.stat().st_size > MAX_BYTES):
+        out.unlink(missing_ok=True)
+        return ""
     return out.read_text(encoding="utf-8", errors="replace") if out.exists() else ""
 
 
@@ -256,7 +359,7 @@ def ocr_pdf(pdf: Path) -> str:
     tmp = pdf.parent / f".{pdf.stem}-ocr"
     tmp.mkdir(exist_ok=True)
     run_tool(["pdftoppm", "-r", "200", "-l", str(OCR_MAX_PAGES), "-png", str(pdf), str(tmp / "p")],
-             check=False, stderr=subprocess.DEVNULL)
+             stderr=subprocess.DEVNULL)
     pages = []
     for img in sorted(tmp.glob("p-*.png")):
         res = run_tool(["tesseract", str(img), "-", "-l", "eng"],
@@ -351,7 +454,8 @@ class _TextExtractor(HTMLParser):
             self._emit("\n")
         elif tag == "a" and self.href is not None:
             text = " ".join("".join(self.link_text).split())
-            text = text.replace("[", r"\[").replace("]", r"\]")
+            # 「\」を先に符号化する。後にすると、元からある「\]」が「\\]」になって「]」が効き直す
+            text = text.replace("\\", "\\\\").replace("[", r"\[").replace("]", r"\]")
             self._emit(f"[{text}]({self.href})" if text else "")
             self.href = None
 
@@ -374,47 +478,37 @@ class _TextExtractor(HTMLParser):
 def html_to_md(url: str, out: Path, body: bytes | None = None, ctype: str = "") -> str:
     """本文を markdown にする。要約はしない。
 
-    ax があれば ax（--all で全文）。無ければ標準ライブラリで文字を取り出す。
-    body を渡されたら取り直さずにそれを使う（ax が無いときの二重の取得を避ける）。
-    ctype は body の Content-Type。文字コードの名乗りを読むのに使う。
+    取得はいつも download（宛先の検査つき）で行う。ax には取ってきた HTML をファイルで渡し、
+    markdown への変換（--all で全文）だけをさせる。ax に URL を渡すと ax が自分で通信し、
+    たどった転送の先をこちらで確かめられない（2026-10-20 の2回目のレビュー）。
+    ax はファイルを UTF-8 として読むので、こちらで文字にしてから UTF-8 で書いて渡す。
+    ax が無ければ標準ライブラリで文字を取り出す。
+    body を渡されたら取り直さずにそれを使う。ctype は body の Content-Type（文字コードの名乗りを読む）。
     """
-    if HAS_AX:
-        # URL は「--」の後ろに置く。「-」で始まる文字列をオプションとして読ませない
-        res = run_tool(["ax", "--md", "--all", "--", url], capture_output=True,
+    if body is None:
+        body, ctype = download(url)
+    if body[:5] == b"%PDF-":
+        # 転送先が PDF だった。呼び手が「%PDF」で気づいて PDF として取り直す
+        text = "%PDF"
+    elif HAS_AX:
+        page = out.with_name(f".{out.stem}-page.html")
+        page.write_text('<meta charset="utf-8">' + decode_text(body, ctype), encoding="utf-8")
+        # 置き場は作業用の一時フォルダで「-」では始まらないが、念のため「--」の後ろに置く
+        res = run_tool(["ax", "--md", "--all", "--", str(page)], capture_output=True,
                        encoding="utf-8", errors="replace")
+        page.unlink(missing_ok=True)
         text = res.stdout if res else ""
     else:
-        if body is None:
-            body, ctype = download(url)
-        if body[:5] == b"%PDF-":
-            # 転送先が PDF だった。呼び手が「%PDF」で気づいて PDF として取り直す
-            text = "%PDF"
-        else:
-            parser = _TextExtractor(url)
-            parser.feed(decode_text(body, ctype))
-            text = parser.text()
+        parser = _TextExtractor(url)
+        parser.feed(decode_text(body, ctype))
+        text = parser.text()
     out.write_text(text, encoding="utf-8")
     return text
 
 
-def ax_save(url: str, out: Path) -> bool:
-    """本体をそのままファイルに保存する。保存できたら True。
-
-    HAL（hal.inria.fr）は urllib には HTML を返し、ax には転送先の PDF を返す（2026-10-11）。
-    そのとき html_to_md は PDF の中身を文字として .md に書いてしまうので、ここで丸ごと取り直す。
-    ax が無いときは urllib で取り直す。
-    """
-    if HAS_AX:
-        run_tool(["ax", "-o", str(out), "--", url], capture_output=True)
-    else:
-        try:
-            out.write_bytes(download(url)[0])
-        except Exception:  # 取れなければ呼び手が FAIL にする
-            return False
-    return out.exists() and 0 < out.stat().st_size <= MAX_BYTES
-
-
-YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+                 "youtube-nocookie.com", "www.youtube-nocookie.com"}
+ARXIV_HOSTS = {"arxiv.org", "www.arxiv.org", "export.arxiv.org"}
 X_POST = re.compile(r"^https?://(www\.)?(x|twitter)\.com/")
 # 字幕は数分の動画でも千文字に届かないことがあるので、論文より低い下限を使う。
 MIN_TRANSCRIPT_CHARS = 300
@@ -428,10 +522,23 @@ def is_youtube(url: str) -> bool:
     （2026-10-20 のレビュー）。yt-dlp は何でも読む汎用の読み取りを持っているので、YouTube だけに絞る。
     """
     p = urllib.parse.urlsplit(url)
-    host = (p.hostname or "").lower()
+    host = (p.hostname or "").lower().rstrip(".")
     if host == "youtu.be":
         return len(p.path) > 1
-    return host in YOUTUBE_HOSTS and re.match(r"/(watch|shorts/|live/)", p.path) is not None
+    return host in YOUTUBE_HOSTS and re.match(r"/(watch|shorts/|live/|embed/)", p.path) is not None
+
+
+def arxiv_id(url: str) -> str | None:
+    """arXiv の論文の URL なら番号を返す。ホスト名で見る。
+
+    URL のどこかに「arxiv.org/abs/…」があれば当てていたので、他人のページの URL に
+    書き込まれた番号の論文を、そのページの原文として保存しえた（2026-10-20 の2回目のレビュー）。
+    """
+    p = urllib.parse.urlsplit(url)
+    if (p.hostname or "").lower().rstrip(".") not in ARXIV_HOSTS:
+        return None
+    m = re.match(r"/(?:pdf|abs)/(\d{4}\.\d{4,5}(?:v\d+)?)", p.path)
+    return m.group(1) if m else None
 
 
 def youtube_to_md(url: str, out: Path) -> str:
@@ -458,7 +565,8 @@ def youtube_to_md(url: str, out: Path) -> str:
     printed = ""
     for flag in ("--write-subs", "--write-auto-subs"):
         meta = run_tool(
-            ["yt-dlp", "--no-update", "--skip-download", flag, "--encoding", "utf-8",
+            # --no-playlist: watch?v=…&list=… の URL で、再生リストの全部の字幕を取りに行かない
+            ["yt-dlp", "--no-update", "--no-playlist", "--skip-download", flag, "--encoding", "utf-8",
              "--sub-langs", langs, "--sub-format", "vtt", "--no-simulate",
              "--print", "%(title)s\t%(uploader)s\t%(upload_date)s\t%(language|)s",
              "-o", str(tmp / "v.%(ext)s"), "--", url],
@@ -503,10 +611,19 @@ def youtube_to_md(url: str, out: Path) -> str:
     return body
 
 
+def clean(s: str) -> str:
+    """端末に出す文字列から、制御文字（色やクリップボードを操る ESC の並び）と改行の仲間を空白にする。
+
+    他人が決めた文字列（本文・転送先の URL・HTTP のエラーの文）は、1行の出力の列や行を増やしたり、
+    端末を操ったりできる（2026-10-20 の2回目のレビュー）。
+    """
+    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  ]+", " ", s).strip()
+
+
 def first_line(text: str) -> str:
-    """本文の最初の意味のある1行。端末に出すので、制御文字（色やクリップボードを操る ESC の並び）は空白にする。"""
+    """本文の最初の意味のある1行。端末に出すので clean() を通す。"""
     for line in text.splitlines():
-        line = re.sub(r"[\s\x00-\x1f\x7f-\x9f]+", " ", line).strip()
+        line = clean(line)
         if len(line) > 8:
             return line[:100]
     return ""
@@ -545,7 +662,7 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     # ax と yt-dlp に渡す前にもここで止める（両者がたどる転送の先までは見られない）
     problem = url_problem(url)
     if problem:
-        print(f"FAIL\t{name}\t{problem}")
+        print(f"FAIL\t{name}\t{clean(problem)}")
         return 1
 
     if X_POST.match(url):
@@ -568,7 +685,7 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
     try:
         body, ctype = download(url)
     except Exception as e:  # HTTP エラーも接続失敗も、呼び手にとっては同じ「取れない」
-        print(f"FAIL\t{name}\t{type(e).__name__}: {e}")
+        print(f"FAIL\t{name}\t{type(e).__name__}: {clean(str(e))}")
         return 1
 
     if not body.strip():
@@ -581,7 +698,7 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         saved.write_bytes(body)
         text = pdf_to_text(saved)
         kept = saved.with_suffix(".txt")
-        if len(text.strip()) < 200 and not re.search(r"arxiv\.org", url):
+        if len(text.strip()) < 200 and not arxiv_id(url):
             text = ocr_if_longer(saved, text)  # 文字の層が無い PDF。arXiv は下で HTML 版に切り替える
     elif ctype.startswith(("text/plain", "text/markdown", "application/json", "text/csv")):
         # GitHub の README やデータ（raw.githubusercontent.com）はこの形で来る
@@ -596,17 +713,21 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         kept = sources / f"{name}.md"
         text = html_to_md(url, kept, body, ctype)
         saved = kept
-        # HTML のつもりが、ax は転送をたどって PDF 本体を受け取っていた（HAL）。PDF として取り直す
-        if text.lstrip().startswith("%PDF"):
+        # HAL は、ブラウザの名乗りには閲覧用の HTML を、それ以外の名乗りには PDF 本体を返す。
+        # 前は ax の取り直しで PDF を受け取っていた。いまは名乗りを変えて自分で頼み直す。
+        # ax を使っていたころと同じく、HTML のページには2回頼むことになる
+        pdf = sources / f"{name}.pdf"
+        if pdf_save(url, pdf) and pdf.read_bytes()[:5] == b"%PDF-":
             kept.unlink(missing_ok=True)
-            saved = sources / f"{name}.pdf"
-            if ax_save(url, saved) and saved.read_bytes()[:5] == b"%PDF-":
-                text = pdf_to_text(saved)
-                kept = saved.with_suffix(".txt")
-                if len(text.strip()) < 200:
-                    text = ocr_if_longer(saved, text)
-            else:
-                saved.unlink(missing_ok=True)
+            saved = pdf
+            text = pdf_to_text(saved)
+            kept = saved.with_suffix(".txt")
+            if len(text.strip()) < 200:
+                text = ocr_if_longer(saved, text)
+        else:
+            pdf.unlink(missing_ok=True)
+            if text.lstrip().startswith("%PDF"):
+                kept.unlink(missing_ok=True)
                 print(f"FAIL\t{name}\t転送先の PDF を保存できなかった")
                 return 1
     else:
@@ -615,12 +736,12 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
 
     # arXiv の PDF は pdftotext で本文が0文字になることがある（2026-10-09 の試しで
     # COLE・Accordion）。同じ論文の HTML 版なら取れたので、短いときだけ切り替える。
-    arxiv_id = re.search(r"arxiv\.org/(?:pdf|abs)/(\d{4}\.\d{4,5}(?:v\d+)?)", url)
-    if arxiv_id and len(text) < MIN_TEXT_CHARS:
+    paper = arxiv_id(url)
+    if paper and len(text) < MIN_TEXT_CHARS:
         for p in (saved, kept):
             p.unlink(missing_ok=True)
         kept = saved = sources / f"{name}.md"
-        text = html_to_md(f"https://arxiv.org/html/{arxiv_id.group(1)}", kept)
+        text = html_to_md(f"https://arxiv.org/html/{paper}", kept)
 
     # PDF は英語の論文を基準に高い下限。和文の PDF だけは HTML と同じ下限にする
     floor = MIN_TEXT_CHARS if saved.suffix == ".pdf" and not mostly_cjk(text) else MIN_HTML_CHARS

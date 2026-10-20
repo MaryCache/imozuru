@@ -57,11 +57,14 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     # 0 や負の行・end が line より前の指定は、前後2行の余裕で原文の頭に寄せると通ってしまい、
     # 指していない行を「照合済み」と見せる（2026-10-20 のレビュー）。原文の中の行だけを受け付ける
-    first, last = q["line"], q.get("end", q["line"])
+    # end が無いか null なら1行だけ（null は前から通っていたので受け付け続ける）
+    first = q["line"]
+    last = first if q.get("end") is None else q["end"]
     if not all(type(n) is int for n in (first, last)) or not 1 <= first <= last <= len(lines):
         return False, [], 0, 0
-    start = max(1, q["line"] - 2)
-    end = min(len(lines), q.get("end", q["line"]) + 2)
+    start = max(1, first - 2)
+    end = min(len(lines), last + 2)
+    # ここから先は、検査を通った first・last だけを使う
     region = norm(" ".join(lines[start - 1:end]))
     # 2段組の PDF は左右の段が1行に混ざり、何行かにまたがる文はそのままでは照合できない
     # （Yoshida 2008 で起きた）。抜き書きを「…」で区切れば、区切りごとに順に照らす。
@@ -75,7 +78,7 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
             break
         pos = at + len(piece)
     c0 = max(1, q["line"] - CONTEXT_LINES)
-    c1 = min(len(lines), q.get("end", q["line"]) + CONTEXT_LINES)
+    c1 = min(len(lines), last + CONTEXT_LINES)
     return ok, lines[c0 - 1:c1], c0, c1
 
 
@@ -85,7 +88,7 @@ def esc(s: str) -> str:
 
 def quote_html(src_dir: Path, q: dict, ctx: list[str], c0: int) -> str:
     loc = f"{q['file']}:{q['line']}" + (f"-{q['end']}" if q.get("end") else "")
-    hit = range(q["line"], q.get("end", q["line"]) + 1)
+    hit = range(q["line"], (q.get("end") or q["line"]) + 1)
     # markdown の空行で間延びするので、空の行は飛ばす（行番号はそのまま残るので位置は追える）
     # span は display:block なので区切りの改行は入れない（入れると行間が二重になった）
     ctx_html = "".join(

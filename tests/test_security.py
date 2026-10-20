@@ -4,13 +4,17 @@
 """
 
 import contextlib
+import gzip
 import http.server
 import importlib.util
 import io
+import json
+import os
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -149,16 +153,26 @@ class YoutubeHostTests(unittest.TestCase):
             asked.append(cmd[cmd.index("--sub-langs") + 1])
             return subprocess.CompletedProcess(cmd, 0, "Talk\tSpeaker\t20220820\ten,all\n", "")
 
-        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch.subprocess, "run", side_effect=yt_dlp):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch, "run_tool", side_effect=yt_dlp):
             fetch.youtube_to_md("https://www.youtube.com/watch?v=a", Path(tmp) / "t.md")
         self.assertEqual(asked[-1], "ja-orig,en-orig")
 
 
 class DecodeTests(unittest.TestCase):
-    def test_non_text_codec_does_not_crash(self):
-        for name in ("zlib_codec", "base64_codec", "hex_codec", "rot13", "idna"):
+    def test_non_document_codecs_are_skipped(self):
+        # 「\x81 」で UTF-8・cp932・EUC-JP を外し、名乗りの文字コードまで試させる
+        for name in ("zlib_codec", "base64_codec", "hex_codec", "rot13", "idna", "punycode", "utf-7",
+                     "unicode_escape"):
             with self.subTest(name=name):
-                self.assertEqual(fetch.decode_text(b"plain text", f"text/html; charset={name}"), "plain text")
+                self.assertIsInstance(fetch.decode_text(b"\x81 plain", f"text/html; charset={name}"), str)
+
+    def test_punycode_label_does_not_hang(self):
+        # 「\x81 」は UTF-8・cp932・EUC-JP のどれでも読めない。読み直しで名乗りの punycode まで行かせる。
+        # 後ろは punycode なら長さの2乗の時間がかかる形
+        body = b"x\x81 -" + b"ba" * 60000
+        started = time.monotonic()
+        fetch.decode_text(body, "text/plain; charset=punycode")
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_latin1_label_on_utf8_body(self):
         text = "日本語の記事"
@@ -171,31 +185,56 @@ class DecodeTests(unittest.TestCase):
 
 
 class ToolLimitTests(unittest.TestCase):
-    def test_timeout_is_passed_and_handled(self):
-        def slow(cmd, **kwargs):
-            self.assertEqual(kwargs["timeout"], fetch.TOOL_TIMEOUT)
-            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+    def test_run_tool_stops_grandchildren(self):
+        """時間切れで、孫の処理（出力の管をつかんだまま眠る）まで止めて戻る。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            pid_file = Path(tmp) / "grandchild.pid"
+            script = ("import subprocess, sys, time\n"
+                      "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                      f"open({str(pid_file)!r}, 'w').write(str(p.pid))\n"
+                      "time.sleep(60)\n")
+            started = time.monotonic()
+            with patch.object(fetch, "TOOL_TIMEOUT", 1):
+                result = fetch.run_tool([sys.executable, "-c", script], capture_output=True, encoding="utf-8")
+            self.assertIsNone(result)
+            self.assertLess(time.monotonic() - started, 15)
+            grandchild = int(pid_file.read_text())
+            time.sleep(0.2)
+            if os.name != "nt":
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(grandchild, 0)
 
-        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch.subprocess, "run", side_effect=slow), \
+    def test_callers_handle_timeouts(self):
+        def timed_out(cmd, **kwargs):
+            if cmd[0] == "pdftotext":  # 書きかけを残して時間切れになった
+                Path(cmd[-1]).write_text("partial " * 500, encoding="utf-8")
+            return None
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch, "run_tool", side_effect=timed_out), \
                 patch.object(fetch, "missing", return_value=[]):
             pdf = Path(tmp) / "a.pdf"
             pdf.write_bytes(b"%PDF-1.4")
             self.assertEqual(fetch.pdf_to_text(pdf), "")
+            self.assertFalse(pdf.with_suffix(".txt").exists())
             self.assertEqual(fetch.ocr_pdf(pdf), "")
             self.assertEqual(fetch.youtube_to_md("https://youtu.be/a", Path(tmp) / "t.md"), "")
             with patch.object(fetch, "HAS_AX", True):
-                self.assertEqual(fetch.html_to_md("https://example.test/", Path(tmp) / "h.md"), "")
+                self.assertEqual(fetch.html_to_md("https://example.test/", Path(tmp) / "h.md",
+                                                  b"<p>x</p>", "text/html"), "")
 
     def test_ocr_page_cap(self):
         with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(fetch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
+                patch.object(fetch, "run_tool", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
                 patch.object(fetch, "missing", return_value=[]):
             fetch.ocr_pdf(Path(tmp) / "a.pdf")
         cmd = run.call_args_list[0].args[0]
         self.assertEqual(cmd[cmd.index("-l") + 1], str(fetch.OCR_MAX_PAGES))
 
     def test_failed_ocr_keeps_extracted_text(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch, "ocr_pdf", return_value=""):
+        # 本物の ocr_pdf を通す。pdftoppm が1枚も書き出さなかったとき、.txt を空で上書きしない
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(fetch, "run_tool", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                patch.object(fetch, "missing", return_value=[]):
             pdf = Path(tmp) / "a.pdf"
             pdf.with_suffix(".txt").write_text("short text layer", encoding="utf-8")
             self.assertEqual(fetch.ocr_if_longer(pdf, "short text layer"), "short text layer")
@@ -347,6 +386,162 @@ class ReportLineTests(unittest.TestCase):
             for q in ({"line": 0}, {"line": -1}, {"line": 2, "end": 1}, {"line": 99}, {"line": "1"}):
                 with self.subTest(q=q):
                     self.assertFalse(report.verify(src, {"file": "a.md", "text": "first line", **q})[0])
+
+
+class SecondRoundTests(unittest.TestCase):
+    """2026-10-20 の2回目のレビュー（Claude・Sol）で見つかったもの。"""
+
+    def test_host_with_userinfo_or_percent_is_refused(self):
+        # 検査は a.example を見るが、urllib は x@a.example や %61 を戻した名前を引く
+        for url in ("http://x@a.example.com/", "http://%61.example.com/", "http://a.example.com%2f@b/"):
+            for module in (fetch, watch):
+                with self.subTest(url=url, module=module.__name__), \
+                        patch.object(module, "resolve", lambda host: {PUBLIC_IP}):
+                    self.assertIsNotNone(module.url_problem(url))
+
+    def test_ipv4_inside_ipv6_is_checked(self):
+        for addr in ("64:ff9b::7f00:1", "::127.0.0.1", "64:ff9b::a00:1", "2002:7f00:1::", "::ffff:10.0.0.1"):
+            for module in (fetch, watch):
+                with self.subTest(addr=addr, module=module.__name__), \
+                        patch.object(module, "resolve", lambda host: {addr}):
+                    self.assertIsNotNone(module.url_problem("https://looks-public.example/"))
+
+    def test_broken_url_does_not_crash(self):
+        for module in (fetch, watch):
+            with self.subTest(module=module.__name__):
+                self.assertIsNotNone(module.url_problem("http://[::1/"))
+        self.assertEqual(watch.md_link("http://["), "")
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(fetch.fetch_source(Path(tmp), "p", "http://[evil]/", Path(tmp)), 1)
+
+    def test_private_opt_out(self):
+        with patch.dict(os.environ, {"IMOZURU_ALLOW_PRIVATE": "1"}):
+            self.assertIsNone(fetch.url_problem("http://127.0.0.1:8080/"))
+            self.assertIsNotNone(fetch.url_problem("file:///etc/passwd"))  # http(s) の検査は残る
+        self.assertIn("IMOZURU_ALLOW_PRIVATE", fetch.url_problem("http://127.0.0.1:8080/"))
+
+    def test_fail_line_has_no_control_characters(self):
+        err = fetch.UnsafeURL("転送先 http://127.0.0.1/\x1b]52;c;ZXZpbA==\x07\tEXTRA\nFAKE")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch, "resolve", lambda host: {PUBLIC_IP}), \
+                patch.object(fetch, "download", side_effect=err), contextlib.redirect_stdout(io.StringIO()) as out:
+            fetch.fetch_source(Path(tmp), "p", "https://example.test/", Path(tmp))
+        line = out.getvalue()
+        self.assertEqual(line.count("\n"), 1)
+        self.assertEqual(line.count("\t"), 2)
+        self.assertNotIn("\x1b", line)
+
+    def test_arxiv_by_host(self):
+        self.assertEqual(fetch.arxiv_id("https://arxiv.org/abs/2401.00001v2"), "2401.00001v2")
+        for url in ("https://evil.example/?arxiv.org/abs/2401.00001", "https://arxiv.org.evil.example/abs/2401.00001"):
+            with self.subTest(url=url):
+                self.assertIsNone(fetch.arxiv_id(url))
+
+    def test_youtube_embed_and_playlist(self):
+        self.assertTrue(fetch.is_youtube("https://www.youtube-nocookie.com/embed/abc"))
+        self.assertTrue(fetch.is_youtube("https://www.youtube.com./watch?v=abc"))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+                fetch, "run_tool", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            fetch.youtube_to_md("https://www.youtube.com/watch?v=a&list=b", Path(tmp) / "t.md")
+        self.assertIn("--no-playlist", run.call_args_list[0].args[0])
+
+    def test_truncated_body_fails(self):
+        res = MagicMock()
+        res.__enter__.return_value = res
+        res.read.return_value = b"half"
+        res.length = 100  # Content-Length に届かずに接続が切れた
+        res.headers = {}
+        with patch.object(fetch, "resolve", lambda host: {PUBLIC_IP}), patch.object(fetch._OPENER, "open", return_value=res):
+            with self.assertRaises(ValueError):
+                fetch.download("https://example.test/")
+        with patch.object(watch, "resolve", lambda host: {PUBLIC_IP}), patch.object(watch._OPENER, "open", return_value=res):
+            with self.assertRaises(ValueError):
+                watch.fetch("https://example.test/")
+
+    def test_gzip_members_and_truncation(self):
+        feed = b'<?xml version="1.0"?><rss><channel><item><title>t</title></item></channel></rss>'
+        self.assertEqual(watch.gunzip(gzip.compress(feed[:30]) + gzip.compress(feed[30:])), feed)
+        self.assertEqual(watch.gunzip(gzip.compress(feed) + b"\0\0\0"), feed)
+        with self.assertRaises(ValueError):
+            watch.gunzip(gzip.compress(feed)[:-10])
+        with patch.object(watch, "MAX_BYTES", 200), self.assertRaises(ValueError):
+            watch.gunzip(gzip.compress(feed) + gzip.compress(b" " * 1000))
+
+    def test_markdown_escaping_holds(self):
+        # 元からある「\」で、足した「\」を打ち消させない
+        self.assertEqual(watch.md_text("\\](https://evil.example/)"), "\\\\\\](https://evil.example/)")
+        parser = fetch._TextExtractor("https://example.test/")
+        parser.feed('<a href="/ok">x\\](https://evil.example/)</a>')
+        self.assertIn("[x\\\\\\](https://evil.example/)](https://example.test/ok)", parser.text())
+
+    def test_watch_check_escapes_labels_and_errors(self):
+        title = "&amp;lt;img src=x onerror=alert(1)&amp;gt;"
+        with tempfile.TemporaryDirectory() as tmp:
+            topic = Path(tmp)
+            (topic / "watch.tsv").write_text(
+                f"feed\t{watch.plain(title)}\thttps://a.example/feed\thttps://a.example/\n"
+                "feed\tbroken\thttps://b.example/feed\thttps://b.example/\n", encoding="utf-8")
+
+            def fetch_(url):
+                if url.startswith("https://b."):
+                    raise ValueError("<script>bad</script>\x1b[31m")
+                return (b'<?xml version="1.0"?><rss><channel><item><title>t</title>'
+                        b'<link>http://[</link></item></channel></rss>', "application/rss+xml")
+
+            with patch.object(watch, "fetch", side_effect=fetch_), contextlib.redirect_stdout(io.StringIO()):
+                watch.cmd_check(topic, 14, True)
+            md = next((topic / "watch").glob("*.md")).read_text(encoding="utf-8")
+        self.assertNotIn("<img", md)
+        self.assertNotIn("<script", md)
+        self.assertNotIn("\x1b", md)
+
+    def test_tsv_keeps_rows_with_unicode_line_separators(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "watch.tsv").write_text("site\tgood\u2028site\thttps://a.example/feed\thttps://a.example/\n",
+                                                encoding="utf-8")
+            self.assertEqual(watch.load_watch(Path(tmp))[0][2], "https://a.example/feed")
+        self.assertEqual(watch.clean("a\u2028b\x85c"), "a b c")
+
+    def test_chain_redirects_stay_on_the_api(self):
+        handler = chain._SameOrigin()
+        req = chain.urllib.request.Request(chain.API + "/works/W1")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(req, MagicMock(), 302, "Found", {}, "http://127.0.0.1:9222/json")
+        handler.redirect_request(req, MagicMock(), 302, "Found", {}, chain.API + "/works/W2")
+
+    def test_chain_doi_quoting(self):
+        with patch.object(chain, "get", return_value={}) as get:
+            chain.resolve("https://doi.org/10.1000/a%28b%29")
+            self.assertEqual(get.call_args.args[0], "/works/doi:10.1000/a%28b%29")
+            chain.resolve("10.1000/50%off")
+            self.assertEqual(get.call_args.args[0], "/works/doi:10.1000/50%25off")
+            with self.assertRaises(SystemExit):
+                chain.resolve("10.1/../../authors")
+
+    def test_chain_author_line_is_clean(self):
+        author = {"id": "https://openalex.org/A1", "display_name": "Name\tX\n# fake", "works_count": 1,
+                  "last_known_institutions": [{"display_name": "Inst\x1b]52;c;x\x07"}]}
+
+        def get(path, **params):
+            return {"results": [author]} if path == "/authors" else {"results": []}
+
+        with patch.object(chain, "get", side_effect=get), patch.object(sys, "argv", ["chain.py", "author", "x"]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            chain.main()
+        self.assertEqual(out.getvalue().count("\n"), 1)
+        self.assertNotIn("\x1b", out.getvalue())
+
+    def test_non_ascii_digits(self):
+        for argv in (["watch.py", "check", "/tmp/x", "--days", "²"], ["chain.py", "refs", "W1", "-n", "²"]):
+            module = watch if argv[0] == "watch.py" else chain
+            with self.subTest(argv=argv), patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(module.main(), 2)
+
+    def test_report_accepts_null_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "topic" / "sources"
+            src.mkdir(parents=True)
+            (src / "a.md").write_text("first line\n", encoding="utf-8")
+            self.assertTrue(report.verify(src, {"file": "a.md", "line": 1, "end": None, "text": "first line"})[0])
 
 
 if __name__ == "__main__":

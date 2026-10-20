@@ -75,9 +75,10 @@ class PdfToTextTests(unittest.TestCase):
 
             def fake_run(args, **kwargs):
                 pdf.with_suffix(".txt").write_bytes("Schizophrénie\n".encode("utf-8"))
+                return subprocess.CompletedProcess(args, 0)  # None は時間切れの意味になる
 
             with patch.object(fetch, "missing", return_value=[]), \
-                    patch.object(fetch.subprocess, "run", side_effect=fake_run) as run:
+                    patch.object(fetch, "run_tool", side_effect=fake_run) as run:
                 text = fetch.pdf_to_text(pdf)
         args = run.call_args.args[0]
         self.assertEqual(args[args.index("-enc") + 1], "UTF-8")

@@ -67,27 +67,61 @@ def resolve(host: str) -> set[str]:
 def url_problem(url: str) -> str | None:
     """取りに行ってはいけない URL なら理由を、よければ None を返す。
 
-    フィードの場所はページを書いた他人が決め、watch.tsv に残って check のたびに取りに行く。
-    file:// や 127.0.0.1 を書かれると、手元のファイルやサービスの中身を watch/ に写してしまう
-    （2026-10-20 のレビュー）。名前を引いた先が全部インターネット上の宛先のときだけ通す。
+    URL も転送の先も、検索結果のページを書いた他人が決める。127.0.0.1 や社内の宛先を書かれると、
+    手元で動いているサービス（開発用のサーバー・ローカルの AI・ブラウザのデバッグ口）の中身を
+    sources/ に写してしまう（2026-10-20 のレビュー）。名前を引いた先が全部インターネット上の
+    宛先のときだけ通す。10進や16進で書いた IP も、名前を引けば 127.0.0.1 などになるので同じく止まる。
     名前を引いてから接続するまでの間に引き先を変える手（DNS rebinding）は防げない。
+
+    ホストの部分に「@」か「%」があれば断る。urlsplit は「x@a.example」の a.example を見るが、
+    urllib は x@a.example をそのまま引き、「%61」は urllib だけが a に戻す。検査とつなぐ先がずれる。
+    VPN などで外の名前まで内側の宛先に引ける環境では、環境変数 IMOZURU_ALLOW_PRIVATE=1 で
+    宛先の検査だけを外せる（http(s) の検査は残る）。
     """
-    p = urllib.parse.urlsplit(url)
+    try:
+        p = urllib.parse.urlsplit(url)
+        host = p.hostname
+    except ValueError:
+        return "URL の形が壊れている"
     if p.scheme.lower() not in {"http", "https"}:
         return "http(s) の URL だけを取りに行く"
-    if not p.hostname:
+    if not host:
         return "URL にホストが無い"
+    if "@" in p.netloc or "%" in p.netloc:
+        return "URL のホストに「@」か「%」が入っている"
+    if os.environ.get("IMOZURU_ALLOW_PRIVATE") == "1":
+        return None
     try:
-        addrs = resolve(p.hostname)
-    except (OSError, UnicodeError) as e:
+        addrs = resolve(host)
+    except (OSError, UnicodeError, ValueError) as e:
         return f"ホストを引けない（{e}）"
     for addr in addrs:
-        ip = ipaddress.ip_address(addr.split("%", 1)[0])  # IPv6 の %eth0 のような印を外す
-        if getattr(ip, "ipv4_mapped", None):
-            ip = ip.ipv4_mapped
-        if not ip.is_global:
-            return f"手元や内側の宛先（{ip}）には取りに行かない"
+        for ip in _addresses_inside(ipaddress.ip_address(addr.split("%", 1)[0])):  # IPv6 の %eth0 を外す
+            if not ip.is_global:
+                return (f"手元や内側の宛先（{ip}）には取りに行かない"
+                        "（VPN などで外の名前も内側に引ける環境なら IMOZURU_ALLOW_PRIVATE=1 で外せる）")
     return None
+
+
+def _addresses_inside(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> list:
+    """IP と、その IPv6 の中に埋め込まれた IPv4 を返す。
+
+    64:ff9b::7f00:1（NAT64）や ::127.0.0.1 は IPv6 としては「インターネット上」に数えられるが、
+    中の IPv4 は 127.0.0.1。NAT64 のある回線では手元へ届く（2026-10-20 の2回目のレビュー）。
+    """
+    found = [ip]
+    if ip.version == 6:
+        low32 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if ip.ipv4_mapped:
+            found.append(ip.ipv4_mapped)
+        if ip.sixtofour:
+            found.append(ip.sixtofour)
+        if ip.teredo:
+            found.extend(ip.teredo)
+        if (ip in ipaddress.ip_network("::/96") or ip in ipaddress.ip_network("64:ff9b::/96")
+                or ip in ipaddress.ip_network("64:ff9b:1::/48")):
+            found.append(low32)
+    return found
 
 
 class _Redirect308(urllib.request.HTTPRedirectHandler):
@@ -117,14 +151,30 @@ def fetch_final(url: str) -> tuple[bytes, str, str]:
         body = res.read(MAX_BYTES + 1)
         if len(body) > MAX_BYTES:
             raise ValueError(f"本体が {MAX_BYTES:,} バイトを超える")
-        # DeepMind のブログは頼まなくても gzip で返す。展開した後の大きさにも上限を置く
-        # （小さな gzip が何 GB にも膨らむ爆弾で、メモリを使い切らないように）
-        if res.headers.get("Content-Encoding", "").lower() == "gzip":
-            inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
-            body = inflater.decompress(body, MAX_BYTES + 1)
-            if len(body) > MAX_BYTES:
-                raise ValueError(f"展開した本体が {MAX_BYTES:,} バイトを超える")
+        if isinstance(res.length, int) and res.length > 0:  # read(n) は途中で切れても例外を出さない
+            raise ValueError("本体が途中で切れた")
+        # DeepMind のブログは頼まなくても gzip で返す
+        if res.headers.get("Content-Encoding", "").strip().lower() in {"gzip", "x-gzip"}:
+            body = gunzip(body)
         return body, res.headers.get("Content-Type", ""), res.geturl()
+
+
+def gunzip(data: bytes) -> bytes:
+    """gzip を展開する。展開した後の合計にも MAX_BYTES の上限を置き、途中で切れた gzip は断る。
+
+    小さな gzip が何 GB にも膨らむ爆弾で、メモリを使い切らないようにする。gzip は複数のかたまりを
+    つないでよいので、残り（unused_data）が無くなるまで続けて展開する（2026-10-20 の2回目のレビュー）。
+    """
+    out = b""
+    while data:
+        inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        out += inflater.decompress(data, MAX_BYTES + 1 - len(out))
+        if len(out) > MAX_BYTES or inflater.unconsumed_tail:
+            raise ValueError(f"展開した本体が {MAX_BYTES:,} バイトを超える")
+        if not inflater.eof:
+            raise ValueError("gzip が途中で切れた")
+        data = inflater.unused_data.lstrip(b"\0")  # 後ろの0の詰め物は、標準の gzip と同じく読み飛ばす
+    return out
 
 
 def fetch(url: str) -> tuple[bytes, str]:
@@ -183,18 +233,29 @@ def plain(s: str | None) -> str:
 
 
 def md_text(s: str) -> str:
-    """フィードの題や冒頭を markdown に書く形にする。
+    r"""フィードの題や冒頭を markdown に書く形にする。
 
     題は他人が書く。「&amp;lt;img onerror=…&amp;gt;」のように二重に符号化しておくと、
     plain() の後で生のタグになり、.md を HTML として表示する道具で動いてしまう（2026-10-20 のレビュー）。
+    「\」は先に符号化する。後にすると、元からある「\]」が「\\]」になって「]」が効き直す。
+    改行と制御文字は空白にする（1行のはずの見出しや箇条を割らない）。
     """
-    s = s.replace("<", "&lt;").replace(">", "&gt;")
+    s = clean(s).replace("\\", "\\\\").replace("<", "&lt;").replace(">", "&gt;")
     return s.replace("[", r"\[").replace("]", r"\]")
 
 
+def clean(s: str) -> str:
+    """制御文字（端末を操る ESC の並び）と改行の仲間を空白にする。fetch.py の clean と同じ。"""
+    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  ]+", " ", s).strip()
+
+
 def md_link(url: str) -> str:
-    """記事の URL を markdown のリンク先に書く形にする。http(s) 以外（javascript: など）は空にする。"""
-    if urllib.parse.urlsplit(url).scheme.lower() not in {"http", "https"}:
+    """記事の URL を markdown のリンク先に書く形にする。http(s) 以外（javascript: など）と壊れた URL は空にする。"""
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+    except ValueError:  # 「http://[」のような URL で、check 全体を止めない
+        return ""
+    if scheme not in {"http", "https"}:
         return ""
     return re.sub(r"[()\s<>]", lambda m: f"%{ord(m.group(0)):02X}", url)
 
@@ -280,7 +341,8 @@ def load_watch(topic: Path) -> list[list[str]]:
     p = topic / "watch.tsv"
     if not p.exists():
         return []
-    rows = [ln.split("\t") for ln in p.read_text(encoding="utf-8").splitlines()
+    # splitlines() は U+2028 なども行の区切りにするので、書くときと同じ \n だけで分ける
+    rows = [ln.rstrip("\r").split("\t") for ln in p.read_text(encoding="utf-8").split("\n")
             if ln and not ln.startswith("#")]
     return [r for r in rows if len(r) >= 3]
 
@@ -299,10 +361,10 @@ def cmd_add(topic: Path, url: str, name: str | None) -> int:
         kind, feed = discover(url)
         found = items(fetch(feed)[0])  # 引けないフィードは足さない
     except SystemExit as e:
-        print(f"足せなかった: {e}")
+        print(f"足せなかった: {clean(str(e))}")
         return 1
     except Exception as e:
-        print(f"足せなかった: {url}（{type(e).__name__}: {e}）")
+        print(f"足せなかった: {clean(url)}（{type(e).__name__}: {clean(str(e))}）")
         return 1
     for row in load_watch(topic):
         if row[2] == feed:
@@ -319,10 +381,10 @@ def cmd_add(topic: Path, url: str, name: str | None) -> int:
         # 末尾だけだと「blog」「releases」ばかりになって見分けられないので、ドメインと道筋で名づける
         label = re.sub(r"^https?://(www\.)?", "", url).rstrip("/")[:40]
     # フィードの URL はページを書いた他人が決める。&#9; や &#10; で列や行を足されないよう、制御文字を断る
-    if any(re.search(r"[\x00-\x1f\x7f]", s) for s in (feed, url)):
-        print(f"足せなかった: {url}（URL にタブや改行が入っている）")
+    if any(clean(s) != s for s in (feed, url)):
+        print(f"足せなかった: {clean(url)}（URL に空白・タブ・改行・制御文字が入っている）")
         return 1
-    label = re.sub(r"[\x00-\x1f\x7f]+", " ", label)
+    label = clean(label)
     topic.mkdir(parents=True, exist_ok=True)
     p = topic / "watch.tsv"
     if not p.exists():
@@ -353,7 +415,7 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
         try:
             got = items(fetch(feed)[0])
         except Exception as e:  # 1つのフィードが落ちても他は見る
-            lines += [f"## {label}（{kind}）", f"- 取れなかった: {type(e).__name__}: {e}", ""]
+            lines += [f"## {md_text(label)}（{kind}）", f"- 取れなかった: {type(e).__name__}: {md_text(str(e))}", ""]
             continue
         seen = set() if fresh else set(state.get(feed, []))
         # 前回が空のフィード（記事0件）も初回と同じく窓で絞る。空の記録で全部を新着と取り違えない
@@ -368,13 +430,13 @@ def cmd_check(topic: Path, days: int, fresh: bool) -> None:
             dated = [i for i in got if i["date"]]
             if dated:
                 last = max(dated, key=lambda i: i["date"])
-                quiet.append(f"- {label}（{kind}）最新 {last['date'].astimezone():%Y-%m-%d} "
+                quiet.append(f"- {md_text(label)}（{kind}）最新 {last['date'].astimezone():%Y-%m-%d} "
                              f"[{md_text(last['title'])}]({md_link(last['link'])})")
             else:
-                quiet.append(f"- {label}（{kind}）記事なし")
+                quiet.append(f"- {md_text(label)}（{kind}）記事なし")
             continue
         total += len(new)
-        lines.append(f"## {label}（{kind}）{'・直近' + str(days) + '日' if first else ''}")
+        lines.append(f"## {md_text(label)}（{kind}）{'・直近' + str(days) + '日' if first else ''}")
         for i in new:
             day = i["date"].astimezone().strftime("%Y-%m-%d") if i["date"] else "日付なし"
             lines.append(f"- {day} [{md_text(i['title'])}]({md_link(i['link'])})")
@@ -408,7 +470,8 @@ def main() -> int:
     if "--days" in args:
         i = args.index("--days")
         value = args[i + 1] if i + 1 < len(args) else ""
-        if not value.isdigit() or int(value) < 1:
+        # isdigit() は「²」も数字と見なして int() で落ちるので、ASCII の数字だけを通す
+        if not re.fullmatch(r"[0-9]+", value) or int(value) < 1:
             print("--days には 1 以上の日数を書く", file=sys.stderr)
             return 2
         days = int(value)

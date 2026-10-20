@@ -136,9 +136,23 @@ class FetchPreservationTests(unittest.TestCase):
 
         with patch.object(fetch, "download", return_value=(b"<html>Redirect</html>", "text/html")), \
                 patch.object(fetch, "html_to_md", side_effect=self.markdown("%PDF")), \
-                patch.object(fetch, "ax_save", side_effect=invalid_pdf):
+                patch.object(fetch, "pdf_save", side_effect=invalid_pdf):
             self.assertEqual(self.run_fetch(), 1)
         self.assert_preserved(before)
+
+    def test_hal_style_pdf_is_fetched_with_plain_user_agent(self):
+        """HAL はブラウザの名乗りに HTML を、それ以外に PDF を返す。名乗りを変えて頼み直し、PDF を残す。"""
+        pdf = b"%PDF-1.4\nHAL paper"
+
+        def download(url, user_agent=fetch.BROWSER_UA):
+            return (pdf, "application/pdf") if user_agent == fetch.PLAIN_UA else (b"<html>viewer</html>", "text/html")
+
+        with patch.object(fetch, "download", side_effect=download), \
+                patch.object(fetch, "html_to_md", side_effect=self.markdown("Viewer page " * 200)), \
+                patch.object(fetch, "pdf_to_text", side_effect=self.pdf_text("Verified paper text. " * 200)):
+            self.assertEqual(self.run_fetch(), 0)
+        self.assertEqual((self.sources / "paper.pdf").read_bytes(), pdf)
+        self.assertFalse((self.sources / "paper.md").exists())
 
     def test_successful_text_retry_replaces_source_and_reports_final_path(self):
         for ctype, suffix in (("text/plain", ".md"), ("text/markdown", ".md"),
@@ -216,7 +230,7 @@ class OptionInjectionTests(unittest.TestCase):
         self.out = Path(tmp.name) / "page.md"
 
     def capture(self, call):
-        with patch.object(fetch.subprocess, "run",
+        with patch.object(fetch, "run_tool",
                           return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
             call()
         return [c.args[0] for c in run.call_args_list]
@@ -227,13 +241,14 @@ class OptionInjectionTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(cmd[-2:], ["--", self.URL])
 
-    def test_ax_markdown(self):
+    def test_ax_gets_a_file_never_the_url(self):
+        """ax には取ってきた HTML のファイルだけを渡す。URL を渡すと ax が自分で通信する。"""
         with patch.object(fetch, "HAS_AX", True):
-            self.assert_url_after_separator(self.capture(lambda: fetch.html_to_md(self.URL, self.out)))
-
-    def test_ax_save(self):
-        with patch.object(fetch, "HAS_AX", True):
-            self.assert_url_after_separator(self.capture(lambda: fetch.ax_save(self.URL, self.out)))
+            cmds = self.capture(lambda: fetch.html_to_md(self.URL, self.out, b"<p>body</p>", "text/html"))
+        self.assertEqual(len(cmds), 1)
+        self.assertNotIn(self.URL, cmds[0])
+        self.assertEqual(cmds[0][-2], "--")
+        self.assertTrue(Path(cmds[0][-1]).is_absolute())
 
     def test_yt_dlp(self):
         self.assert_url_after_separator(self.capture(lambda: fetch.youtube_to_md(self.URL, self.out)))
@@ -263,7 +278,7 @@ class YoutubeCaptionTests(unittest.TestCase):
                         f"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{tracks[lang]}\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, f"Talk\tSpeaker\t20220820\t{language}\n", "")
 
-        with patch.object(fetch.subprocess, "run", side_effect=yt_dlp):
+        with patch.object(fetch, "run_tool", side_effect=yt_dlp):
             body = fetch.youtube_to_md("https://www.youtube.com/watch?v=example", self.out)
         return asked, body
 

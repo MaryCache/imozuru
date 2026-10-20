@@ -31,16 +31,42 @@ MAX_BYTES = 20_000_000
 MAX_N = 200
 
 
+class _SameOrigin(urllib.request.HTTPRedirectHandler):
+    """転送は API と同じ場所（https://api.openalex.org）の中だけたどる。
+
+    素の urlopen は転送の先をどこへでもたどるので、応答が 127.0.0.1 へ転送すると、
+    手元のサービスの中身を読んでしまう（2026-10-20 の2回目のレビュー）。転送の本体は読まずに閉じる。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        fp.close()
+        if not newurl.startswith(API + "/"):
+            raise ValueError(f"API の外への転送はたどらない: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_SameOrigin)
+
+
 def get(path: str, **params) -> dict:
     url = f"{API}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "imozuru (mailto omitted)"})
-    with urllib.request.urlopen(req, timeout=60) as res:
+    with _OPENER.open(req, timeout=60) as res:
         body = res.read(MAX_BYTES + 1)
     if len(body) > MAX_BYTES:
         raise ValueError(f"応答が {MAX_BYTES:,} バイトを超える")
     return json.loads(body)
+
+
+def clean(s: object) -> str:
+    """API の値を1行の出力に入れる形にする。タブ・改行の仲間・制御文字は空白にする。
+
+    題名や著者名は論文の著者や登録者が書く。タブや改行が残ると列や行が増え、エージェントが表を読み違える。
+    端末を操る ESC の並びも、ここで消す。
+    """
+    return re.sub(r"[\s\x00-\x1f\x7f-\x9f  ]+", " ", str(s)).strip()
 
 
 def search_title(key: str) -> list[dict]:
@@ -66,7 +92,8 @@ def resolve(key: str) -> dict:
     """DOI・OpenAlex ID・題名のどれからでも論文を1本引く。題名なら被引用の最も多い1本。
 
     ID と DOI は API の道筋に入る。「?」や「../」を含む値で問い合わせの形を変えられないよう、
-    ID は形を確かめ、DOI は符号化してから入れる。
+    ID は形を確かめ、DOI は「.」「..」の区切りを断ってから符号化して入れる。
+    doi.org の URL は % で符号化済みなので、一度戻してから符号化する（二重にすると %28 が %2528 になる）。
     """
     if WORK_ID.fullmatch(key) or "openalex.org/" in key:
         wid = key.rstrip("/").rsplit("/", 1)[-1]
@@ -74,7 +101,9 @@ def resolve(key: str) -> dict:
             raise SystemExit(f"OpenAlex の ID の形ではない: {key}")
         return get(f"/works/{wid}", select=FIELDS)
     if key.startswith("10.") or "doi.org/" in key:
-        doi = key.split("doi.org/")[-1]
+        doi = urllib.parse.unquote(key.split("doi.org/")[-1]) if "doi.org/" in key else key
+        if any(part in {".", ".."} for part in doi.split("/")):
+            raise SystemExit(f"DOI に「.」か「..」の区切りがある: {key}")
         return get(f"/works/doi:{urllib.parse.quote(doi, safe='/')}", select=FIELDS)
     hits = search_title(key)
     if not hits:
@@ -83,14 +112,10 @@ def resolve(key: str) -> dict:
 
 
 def row(w: dict) -> str:
-    """1本を1行に。題名などに混ざったタブ・改行・制御文字は空白にする。
-
-    題名は論文の著者や登録者が書く。タブや改行が残ると列や行が増え、エージェントが表を読み違える。
-    端末を操る ESC の並びも、ここで消す。
-    """
+    """1本を1行に。どの値も clean() を通す。"""
     oa = (w.get("best_oa_location") or {}).get("pdf_url") or ""
     wid = (w.get("id") or "").rsplit("/", 1)[-1]
-    return "\t".join(re.sub(r"[\x00-\x1f\x7f-\x9f]+", " ", str(x)) for x in (
+    return "\t".join(clean(x) for x in (
         w.get("publication_year"), w.get("cited_by_count"), wid,
         (w.get("display_name") or "")[:120], w.get("doi") or "", oa))
 
@@ -101,7 +126,8 @@ def main() -> int:
     if "-n" in args:
         i = args.index("-n")
         value = args[i + 1] if i + 1 < len(args) else ""
-        if not value.isdigit() or not 1 <= int(value) <= MAX_N:
+        # isdigit() は「²」も数字と見なすので、ASCII の数字だけを通す
+        if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= MAX_N:
             print(f"-n には 1〜{MAX_N} の数を書く", file=sys.stderr)
             return 2
         n = int(value)
@@ -119,11 +145,14 @@ def main() -> int:
         for w in hits:
             print(row(w))
     elif cmd in ("refs", "cites"):
-        wid = resolve(key)["id"].rsplit("/", 1)[-1]
+        # 応答の ID も次の問い合わせに入るので、形を確かめてから使う
+        wid = (resolve(key).get("id") or "").rsplit("/", 1)[-1]
+        if not WORK_ID.fullmatch(wid):
+            raise SystemExit(f"応答の ID の形がおかしい: {clean(wid)}")
         flt = f"cited_by:{wid}" if cmd == "refs" else f"cites:{wid}"
         res = get("/works", filter=flt, sort="cited_by_count:desc",
                   **{"per-page": n}, select=FIELDS)
-        print(f"# {cmd} {wid} 全{res['meta']['count']}本中 上位{len(res['results'])}本")
+        print(f"# {cmd} {wid} 全{clean(res['meta']['count'])}本中 上位{len(res['results'])}本")
         for w in res["results"]:
             print(row(w))
     elif cmd == "author":
@@ -131,9 +160,11 @@ def main() -> int:
         if not hits:
             raise SystemExit(f"著者が見つからない: {key}")
         a = hits[0]
-        aid = a["id"].rsplit("/", 1)[-1]
-        inst = ", ".join(i["display_name"] for i in a.get("last_known_institutions") or [])
-        print(f"# author {a['display_name']} {aid} {inst} 論文{a.get('works_count')}本")
+        aid = (a.get("id") or "").rsplit("/", 1)[-1]
+        if not re.fullmatch(r"A\d+", aid):
+            raise SystemExit(f"応答の著者 ID の形がおかしい: {clean(aid)}")
+        inst = ", ".join(clean(i.get("display_name") or "") for i in a.get("last_known_institutions") or [])
+        print(f"# author {clean(a.get('display_name') or '')} {aid} {inst} 論文{clean(a.get('works_count'))}本")
         res = get("/works", filter=f"author.id:{aid}", sort="cited_by_count:desc",
                   **{"per-page": n}, select=FIELDS)
         for w in res["results"]:
@@ -148,5 +179,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (OSError, ValueError) as e:  # 接続の失敗・HTTP のエラー・壊れた JSON を1行で返す
-        print(f"取れなかった: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"取れなかった: {type(e).__name__}: {clean(e)}", file=sys.stderr)
         sys.exit(1)
