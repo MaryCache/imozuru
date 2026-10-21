@@ -14,6 +14,8 @@
         --out        … 書き出す先（既定 <research_dir>/index.html）
 """
 
+import base64
+import hashlib
 import html
 import json
 import os
@@ -230,15 +232,27 @@ header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:16px max(
 header svg{height:40px;width:auto;flex:none}
 header .ttl{font-family:var(--head);font-weight:500;letter-spacing:.04em;font-size:1.15rem}
 header .sum{color:var(--sub);font-size:.85rem;margin-left:auto}
-.layout{display:grid;grid-template-columns:minmax(0,17rem) minmax(0,1fr);min-height:calc(100vh - 70px)}
+header .menu{display:none;font:inherit;font-size:.85rem;border:1px solid var(--ink);background:var(--card);color:var(--ink);border-radius:6px;padding:4px 12px;cursor:pointer}
+.layout{display:grid;grid-template-columns:var(--side,18rem) minmax(0,1fr);min-height:calc(100vh - 72px)}
 .layout>*{min-width:0}
-aside{border-right:1px solid var(--line);background:var(--paper2);padding:12px 0;max-height:calc(100vh - 70px);overflow-y:auto;position:sticky;top:0}
-aside h2{font-family:var(--head);font-size:.8rem;color:var(--sub);font-weight:500;letter-spacing:.08em;margin:4px 16px 8px}
-aside ol{list-style:none;margin:0;padding:0}
-aside a{display:block;padding:8px 16px;text-decoration:none;border-left:3px solid transparent}
-aside a:hover,aside a:focus-visible{background:var(--card)}
-aside .q{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:.9rem;line-height:1.5}
-aside .m{display:flex;gap:6px;align-items:center;font-size:.72rem;color:var(--sub);margin-top:2px}
+.side{position:sticky;top:0;align-self:start;height:100vh;background:var(--paper2);border-right:1px solid var(--line)}
+body.collapsed .layout{grid-template-columns:0 minmax(0,1fr)}
+body.collapsed aside{visibility:hidden}
+aside{height:100%;overflow-y:auto;overflow-x:hidden;padding:12px 10px}
+aside h2{font-family:var(--head);font-size:.8rem;color:var(--sub);font-weight:500;letter-spacing:.08em;margin:4px 6px 8px}
+aside ol{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(0,1fr);gap:6px}
+aside li{min-width:0}
+aside a{display:block;padding:8px 10px;text-decoration:none;background:var(--paper);border:1px solid var(--line);border-left:3px solid var(--line);border-radius:6px}
+aside a:hover,aside a:focus-visible{background:var(--card);border-color:var(--sub)}
+aside .q{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.9rem;line-height:1.5}
+aside .m{display:flex;gap:6px;align-items:center;font-size:.72rem;color:var(--sub);margin-top:2px;min-width:0}
+.grip{position:absolute;top:50%;right:-15px;transform:translateY(-50%);width:14px;height:72px;padding:0;border:1px solid var(--line);border-left:none;border-radius:0 8px 8px 0;background:var(--paper2);cursor:ew-resize;touch-action:none;z-index:5}
+.grip::before{content:"";position:absolute;left:5px;top:22px;bottom:22px;width:2px;border-left:1px solid var(--sub);border-right:1px solid var(--sub)}
+.grip:focus-visible{outline:2px solid var(--src);outline-offset:2px}
+body.dragging,body.dragging *{cursor:ew-resize!important;user-select:none}
+.shade{display:none}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:4px 16px 14px;margin:16px 0}
+.card>h3{margin-top:10px}
 .chip{display:inline-block;font-size:.7rem;border:1px solid var(--sub);border-radius:99px;padding:0 .5em;white-space:nowrap;color:var(--sub)}
 .chip.none{border-style:dashed}
 main{padding:24px max(16px,env(safe-area-inset-right,0px)) 64px 24px;max-width:60rem}
@@ -277,15 +291,51 @@ summary{cursor:pointer;color:var(--sub)}
 footer{color:var(--sub);font-size:.78rem;margin-top:48px;border-top:1px solid var(--line);padding-top:12px}
 @media (max-width:760px){
  .layout{grid-template-columns:minmax(0,1fr)}
- aside{position:static;max-height:none;border-right:none;border-bottom:1px solid var(--line)}
- .layout:has(.topic:target) aside{display:none}
+ .side{position:fixed;top:0;left:0;height:100dvh;width:min(86vw,20rem);z-index:20;transform:translateX(-100%);transition:transform .2s;box-shadow:none}
+ body.open .side{transform:translateX(0);box-shadow:0 0 24px rgba(72,36,4,.25)}
+ body.dragging .side{transition:none}
+ body.collapsed .layout,.layout{grid-template-columns:minmax(0,1fr)}
+ body.collapsed aside{visibility:visible}
+ .grip{right:-22px;width:22px;height:88px}
+ body.open .shade{display:block;position:fixed;inset:0;background:rgba(72,36,4,.25);z-index:15}
+ header .menu{display:inline-block}
+ header{gap:10px 12px;padding-top:10px;padding-bottom:10px}
+ header svg{height:30px}
+ header .ttl{display:none}
+ td.bar{width:35%}
  main{padding:16px max(16px,env(safe-area-inset-right,0px)) 48px max(16px,env(safe-area-inset-left,0px))}
  header .sum{margin-left:0;width:100%}
- dl.facts{grid-template-columns:minmax(0,1fr)}
- dl.facts dd{margin-bottom:6px}
+ dl.facts{grid-template-columns:minmax(0,6.5rem) minmax(0,1fr);gap:6px 10px}
+ main h2{font-size:1.15rem}
 }
-@media (prefers-reduced-motion:no-preference){aside a{transition:background .15s}}
+@media (prefers-reduced-motion:reduce){.side{transition:none!important}}
 """
+
+
+# 一覧の開閉。つまみをドラッグして広げる・畳む。押すだけでも開閉する。
+# 広い画面は一覧の幅を変え（120px より狭く放せば畳む）、狭い画面は左から引き出す。
+# 引き出しを動かすとつまみも一緒に動き、つまみの上で放したことにならない。移動と放しはページ全体で受け取る。
+# 幅と開閉は localStorage に覚える。スクリプトが動かなくても一覧は CSS だけで出ている
+SIDE_JS = """(function(){var b=document.body,s=document.getElementById('side'),g=s.querySelector('.grip'),
+m=matchMedia('(max-width:760px)'),K='imozuru-side',x0=null,w0=0,mv=false,last=288;
+function st(v){try{localStorage.setItem(K,v)}catch(e){}}
+try{var v=localStorage.getItem(K);if(v==='0')b.classList.add('collapsed');else if(v){last=+v;b.style.setProperty('--side',v+'px')}}catch(e){}
+function toggle(){if(m.matches){b.classList.toggle('open')}else if(b.classList.toggle('collapsed')){st('0')}else{b.style.setProperty('--side',last+'px');st(String(last))}}
+g.addEventListener('pointerdown',function(e){x0=e.clientX;mv=false;var W=s.getBoundingClientRect().width;
+w0=m.matches?(b.classList.contains('open')?0:-W):(b.classList.contains('collapsed')?0:W);e.preventDefault()});
+addEventListener('pointermove',function(e){if(x0===null)return;var d=e.clientX-x0;if(Math.abs(d)>4&&!mv){mv=true;b.classList.add('dragging')}if(!mv)return;
+if(m.matches){var W=s.getBoundingClientRect().width;s.style.transform='translateX('+Math.min(0,Math.max(-W,w0+d))+'px)'}
+else{b.classList.remove('collapsed');b.style.setProperty('--side',Math.min(520,Math.max(0,w0+d))+'px')}});
+function up(e){if(x0===null)return;var d=e.clientX-x0;x0=null;b.classList.remove('dragging');
+if(!mv){toggle();return}
+if(m.matches){var W=s.getBoundingClientRect().width;s.style.transform='';b.classList.toggle('open',w0+d>-W/2)}
+else{var w=Math.min(520,w0+d);if(w<120){b.classList.add('collapsed');b.style.removeProperty('--side');st('0')}
+else{w=Math.max(200,w);last=w;b.style.setProperty('--side',w+'px');st(String(w))}}}
+addEventListener('pointerup',up);addEventListener('pointercancel',up);
+document.querySelector('header .menu').addEventListener('click',function(){b.classList.toggle('open')});
+document.querySelector('.shade').addEventListener('click',function(){b.classList.remove('open')});
+s.querySelectorAll('aside a').forEach(function(a){a.addEventListener('click',function(){b.classList.remove('open')})});
+})();"""
 
 
 def bars(rows: list[tuple[str, int]], cls: str = "", head: str = "", unit: str = "") -> str:
@@ -328,19 +378,19 @@ def topic_html(t: dict) -> str:
     else:
         facts.append(("検索と取得", '記録なし<span class="note">（検索の記録を残す前の調査）</span>'))
     out = [f'<section class="topic" id="t-{esc(t["slug"])}">',
-           '<a class="back" href="#">← 一覧とホームへ</a>',
+           '<a class="back" href="#">← ホームへ</a>',
            f"<h2>{esc(title_of(t))}</h2>",
            f'<p class="note">{esc(t["slug"])}</p>',
-           '<dl class="facts">' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in facts) + "</dl>"]
+           '<div class="card"><dl class="facts">' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in facts) + "</dl></div>"]
     if t["docs"]:
-        out.append("<h3>文書</h3><div class=\"docs\">"
-                   + "".join(f'<a href="{esc(t["slug"])}/{esc(name)}">{esc(label)}</a>' for name, label in t["docs"]) + "</div>")
+        out.append('<div class="card"><h3>文書</h3><div class="docs">'
+                   + "".join(f'<a href="{esc(t["slug"])}/{esc(name)}">{esc(label)}</a>' for name, label in t["docs"]) + "</div></div>")
     if t["claims"]:
-        out.append("<h3>調査の論点</h3><ul class=\"claims\">"
-                   + "".join(f"<li>{status_chip(s)}<span>{esc(c)}</span></li>" for c, s in t["claims"]) + "</ul>")
+        out.append('<div class="card"><h3>調査の論点</h3><ul class="claims">'
+                   + "".join(f"<li>{status_chip(s)}<span>{esc(c)}</span></li>" for c, s in t["claims"]) + "</ul></div>")
     if t["hosts"]:
-        out.append("<h3>原文を取得した媒体</h3><div class=\"hosts\">"
-                   + "".join(f"<span>{esc(h)}<b>{n}</b></span>" for h, n in Counter(t["hosts"]).most_common()) + "</div>")
+        out.append('<div class="card"><h3>原文を取得した媒体</h3><div class="hosts">'
+                   + "".join(f"<span>{esc(h)}<b>{n}</b></span>" for h, n in Counter(t["hosts"]).most_common()) + "</div></div>")
     out.append("</section>")
     return "\n".join(out)
 
@@ -355,12 +405,12 @@ def home_html(topics: list[dict]) -> str:
     by_date = [t for t in topics if t["rounds"] is not None]
     rules = "".join(f"<li>{esc(label)}: {esc('・'.join(words))}</li>" for label, words in REASON_RULES)
     out = ['<section class="home">', "<h2>調べものの記録</h2>",
-           f'<p class="note">左の一覧から調査を選ぶと詳細が開く。数字はすべて各調査のフォルダの記録から機械で数えた。</p>',
-           "<h3>調査を区切った理由</h3>",
+           f'<p class="note">一覧から調査を選ぶと詳細が開く。数字はすべて各調査のフォルダの記録から機械で数えた。</p>',
+           '<div class="card"><h3>調査を区切った理由</h3>',
            f'<p class="note">自動分類。{n}件中 {len(with_reason)}件に記録がある。元の文は各調査の詳細にある。</p>',
            bars(reasons, head="分類", unit="件"),
-           f"<details><summary>分類の規則（記録の文にこの語があれば、上から順に当てはめる）</summary><ul>{rules}</ul></details>",
-           "<h3>原文を取得した媒体</h3>",
+           f"<details><summary>分類の規則（記録の文にこの語があれば、上から順に当てはめる）</summary><ul>{rules}</ul></details></div>",
+           '<div class="card"><h3>原文を取得した媒体</h3>',
            f'<p class="note">map.md の原文の表の URL から数えた。{n}件中 {with_hosts}件に記録がある。上位{SHOWN_HOSTS}件。</p>',
            bars(hosts.most_common(SHOWN_HOSTS), cls="src", head="媒体", unit="本")]
     if len(hosts) > SHOWN_HOSTS:
@@ -370,11 +420,12 @@ def home_html(topics: list[dict]) -> str:
         ok = sum(t["fetch_ok"] for t in fetch_topics)
         ng = sum(t["fetch_ng"] for t in fetch_topics)
         out.append(f'<p class="note">取得の成否の記録は {len(fetch_topics)}件の調査にだけある（保存 {ok}・取得失敗 {ng}）。</p>')
-    out += ["<h3>たどった周の数</h3>",
+    out.append("</div>")
+    out += ['<div class="card"><h3>たどった周の数</h3>',
             f'<p class="note">1周目以降にたどった周の数。0周目（地図づくり）は数えない。{n}件中 {len(by_date)}件に記録がある。</p>',
             bars(sorted(Counter(f"{t['rounds']} 周" for t in by_date).items(), key=lambda kv: int(kv[0].split()[0])),
                  head="周", unit="件"),
-            "</section>"]
+            "</div></section>"]
     return "\n".join(out)
 
 
@@ -392,21 +443,27 @@ def render(topics: list[dict], root: Path) -> str:
     # 選んでいる調査を一覧で示す。スクリプトを使わず、:target を :has() で一覧へ伝える
     current = "".join(f'.layout:has(#t-{t["slug"]}:target) aside a[href="#t-{t["slug"]}"]'
                       "{background:var(--card);border-left-color:var(--src)}" for t in topics)
-    body = [f'<header>{logo}<span class="ttl">調べものの記録</span>'
+    body = [f'<header><button class="menu" type="button" aria-controls="side">調査の一覧</button>{logo}'
+            f'<span class="ttl">調べものの記録</span>'
             f'<span class="sum">調査 {len(topics)} 件・原文 {total_sources} 本</span></header>',
             '<div class="layout">',
-            f'<aside><h2>調査（新しい順）</h2><ol>{items}</ol></aside>',
+            f'<div class="side" id="side"><aside><h2>調査（新しい順）</h2><ol>{items}</ol></aside>'
+            '<button class="grip" type="button" aria-label="調査の一覧を開く・閉じる（ドラッグでも動く）"></button></div>',
+            '<div class="shade"></div>',
             "<main>", home_html(topics), *[topic_html(t) for t in topics],
             '<footer>imozuru の dashboard.py が生成。文書へのリンクは、このページと同じ場所にある調査のフォルダを指す。</footer>',
             "</main></div>"]
+    # スクリプトは中身のハッシュで許可する。'unsafe-inline' にすると、調査の記録から紛れ込んだ文字列も動きうる
+    script_hash = base64.b64encode(hashlib.sha256(SIDE_JS.encode()).digest()).decode()
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; script-src 'sha256-{script_hash}'">
 <title>imozuru 調べものの記録</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500&family=Noto+Serif+JP:wght@400;600&family=Shippori+Mincho:wght@500&display=swap">
 <style>{CSS}{current}</style></head>
 <body>
 {chr(10).join(body)}
+<script>{SIDE_JS}</script>
 </body></html>
 """
 

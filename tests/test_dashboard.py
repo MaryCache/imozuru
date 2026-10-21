@@ -71,11 +71,17 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(dash.classify("1周目まで（論点3/5に原文）"), "一部の論点を残して区切った")
         self.assertEqual(dash.classify("論点6/6に原文（道具の比較は一部だけ）"), "論点に根拠がそろった")
 
-    def test_page_escapes_text_and_needs_no_script(self):
+    def test_page_escapes_text_and_runs_only_the_hashed_script(self):
+        import base64
+        import hashlib
         (self.root / "new-topic" / "map.md").write_text("問い: <script>alert(1)</script>\n", encoding="utf-8")
         page = dash.render(list(self.collect().values()), self.root)
         self.assertNotIn("<script>alert", page)
-        self.assertNotIn("<script", page.split("</head>", 1)[1])
+        body = page.split("</head>", 1)[1]
+        self.assertEqual(body.count("<script"), 1)
+        self.assertIn(f"<script>{dash.SIDE_JS}</script>", body)
+        h = base64.b64encode(hashlib.sha256(dash.SIDE_JS.encode()).digest()).decode()
+        self.assertIn(f"script-src 'sha256-{h}'", page)
         self.assertIn("default-src 'none'", page)
 
     def test_works_without_ledger(self):
