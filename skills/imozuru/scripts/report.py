@@ -169,8 +169,8 @@ def main() -> int:
         return 0
 
     body = [f"<h1>{esc(data['title'])}</h1>",
-            f'<p class="lead">問い: {esc(data["question"])}</p>',
-            f'<p class="lead">止めた理由: {esc(data["stopped"])}</p>',
+            f'<p class="lead">調べたこと: {esc(data["question"])}</p>',
+            f'<p class="lead">調査を区切った理由: {esc(data["stopped"])}</p>',
             '<p class="note">ここに並ぶ引用は、すべて原文をそのまま切り出したもの（機械で照合済み）。エージェントが書いたのは見出し・状態・注記・「訳」だけ。要約はしていない。</p>']
     for c in data["claims"]:
         cls = "status none" if c["status"] == "付かなかった" else "status"

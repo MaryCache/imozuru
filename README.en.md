@@ -115,7 +115,7 @@ report.html    extract page
 queries.jsonl  every hit for every search query
 fetch-log.jsonl fetch record (URL and OK/FAIL)
 digest.json    explanation for the detailed report
-digest.html    detailed report (beginner and adjacent-field explanations, plus the full search record)
+digest.html    detailed report (explanations at Lv1 to Lv3, plus the full search record)
 ```
 
 A sample extract page is in `examples/demo/`, and this command tries the script on its own.
@@ -167,7 +167,9 @@ So, following extracting from Ellis's model, the skill builds a page that cuts t
 
 Extracts alone do not tell a newcomer what the terms mean or what to read first.
 So after stopping, the skill builds a detailed report with two layers: explanation and record.
-The explanation comes in two levels, one for readers with no background and one for readers who know a neighbouring field, and every sentence carries a verbatim quote from a source as its evidence.
+The explanation comes in three levels.
+Lv1 tells readers with no background what happens, Lv2 explains the mechanism to readers who know a neighbouring field, and Lv3 tells specialists where the standard account has been revised and what is still open.
+At every level, each sentence carries a verbatim quote from a source as its evidence.
 `digest.py` checks those quotes the same way as the extracts, and refuses to build the page if any sentence lacks one.
 The record is assembled by machine from every hit of every query and from the fetch results, so it shows everything that was searched and found, including queries that found nothing.
 

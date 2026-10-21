@@ -47,7 +47,7 @@ class DigestTests(unittest.TestCase):
         (self.topic / "sources").mkdir(parents=True)
         (self.topic / "sources" / "paper.txt").write_text(SOURCE, encoding="utf-8")
         self.data = {"title": "夕焼け", "question": "なぜ赤いか", "stopped": "主張に原文が付いた",
-                     "levels": {"intro": level(), "adjacent": level()},
+                     "levels": {"lv1": level(), "lv2": level(), "lv3": level()},
                      "people_places": [sentence("散乱の論文がある。")],
                      "unresolved": ["雲の色は調べていない"]}
 
@@ -69,19 +69,19 @@ class DigestTests(unittest.TestCase):
         code, _ = self.build()
         self.assertEqual(code, 0)
         page = (self.topic / "digest.html").read_text(encoding="utf-8")
-        self.assertIn("入門編", page)
-        self.assertIn("隣接分野編", page)
+        for name in ("Lv1", "Lv2", "Lv3", "調べたこと", "調査を区切った理由"):
+            self.assertIn(name, page)
         self.assertIn("Blue light scatters more than red light.", page)
 
     def test_sentence_without_quote_is_rejected(self):
-        self.data["levels"]["intro"]["summary"].append({"text": "根拠の無い文。", "quotes": []})
+        self.data["levels"]["lv1"]["summary"].append({"text": "根拠の無い文。", "quotes": []})
         code, out = self.build()
         self.assertEqual(code, 1)
         self.assertIn("根拠の引用が無い", out)
         self.assertFalse((self.topic / "digest.html").exists())
 
     def test_paraphrased_quote_is_rejected(self):
-        self.data["levels"]["adjacent"]["answers"][0]["sentences"] = [
+        self.data["levels"]["lv2"]["answers"][0]["sentences"] = [
             sentence("言い換え。", 2, "Blue light is scattered more strongly.")]
         code, out = self.build()
         self.assertEqual(code, 1)
@@ -93,14 +93,14 @@ class DigestTests(unittest.TestCase):
         self.assertEqual(code, 1)
 
     def test_both_levels_are_required(self):
-        del self.data["levels"]["adjacent"]
+        del self.data["levels"]["lv3"]
         code, out = self.build()
         self.assertEqual(code, 1)
-        self.assertIn("隣接分野編が無い", out)
+        self.assertIn("Lv3が無い", out)
 
     def test_failed_build_keeps_prior_page(self):
         (self.topic / "digest.html").write_text("Previous", encoding="utf-8")
-        self.data["levels"]["intro"]["summary"] = []
+        self.data["levels"]["lv1"]["summary"] = []
         code, _ = self.build()
         self.assertEqual(code, 1)
         self.assertEqual((self.topic / "digest.html").read_text(encoding="utf-8"), "Previous")

@@ -3,7 +3,7 @@
 
 抜き書き（report.py）は原文を切り出して並べるだけで、その分野を知らない人には
 読む順も言葉の意味も分からない。詳細レポートは、止めたあとに初めて解説を書く場所で、
-前提知識ゼロ向けの「入門編」と、隣の分野を知っている人向けの「隣接分野編」を分けて置く。
+読み手の水準ごとに Lv1（前提知識ゼロ）・Lv2（近い分野を知っている）・Lv3（この分野の専門）の3編を分けて置く。
 要約を止めていたのは早すぎる閉じ（Kuhlthau 1991）を避けるためなので、調べを止めた後なら書いてよい。
 
 解説の1文ごとに、原文からそのまま切り出した文（ファイル・行）を根拠として付ける。
@@ -20,7 +20,7 @@
 
 digest.json の形:
     {"title", "question", "stopped",
-     "levels": {"intro": 編, "adjacent": 編},
+     "levels": {"lv1": 編, "lv2": 編, "lv3": 編},
      "people_places": [文], "unresolved": ["..."]}
     編 = {"summary": [文], "terms": [{"term", "sentences": [文]}], "answers": [{"claim", "sentences": [文]}]}
     文 = {"text", "quotes": [{"file", "line", "end"?, "text"}]}
@@ -39,8 +39,11 @@ import report  # noqa: E402  照合と引用の描画は抜き書きと同じも
 
 QUERIES = "queries.jsonl"
 FETCH_LOG = "fetch-log.jsonl"
-LEVELS = (("intro", "入門編", "前提知識が無い人向け"),
-          ("adjacent", "隣接分野編", "近い分野を知っている人向け"))
+# 水準ごとに、読み手が知りたいことが違う。Lv1 は何が起きているか、Lv2 は仕組み、
+# Lv3 は仕組みを知っている人が次に知りたいこと（通説の修正・未決着・手法と数値・出典の食い違い）
+LEVELS = (("lv1", "Lv1", "前提知識が無い人向け"),
+          ("lv2", "Lv2", "近い分野を知っている人向け"),
+          ("lv3", "Lv3", "この分野を専門にする人向け"))
 
 
 def append_records(topic: Path, records: list[dict]) -> int:
@@ -278,10 +281,10 @@ def build(topic: Path, check_only: bool) -> int:
 
     src = topic / "sources"
     fetched = fetch_status(load_jsonl(topic / FETCH_LOG))
-    nav = ['<a href="#intro">入門編</a>', '<a href="#adjacent">隣接分野編</a>']
+    nav = [f'<a href="#{k}">{n}</a>' for k, n, _ in LEVELS]
     body = [f"<h1>{esc(data['title'])}</h1>",
-            f'<p class="lead">問い: {esc(data["question"])}</p>',
-            f'<p class="lead">止めた理由: {esc(data["stopped"])}</p>',
+            f'<p class="lead">調べたこと: {esc(data["question"])}</p>',
+            f'<p class="lead">調査を区切った理由: {esc(data["stopped"])}</p>',
             '<p class="note">解説の文の後ろの番号は、その文の根拠として原文からそのまま切り出した引用（機械で照合済み）。'
             "解説はエージェントが書いた。記録の層は機械で組んだ。</p>"]
     sections = [level_html(src, k, n, lead, data["levels"][k]) for k, n, lead in LEVELS]
