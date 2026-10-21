@@ -267,6 +267,7 @@ map.md を下の書式で作り、**問い**と、答えるのに要る**論点*
 - 動画の場所は行番号の代わりに時刻で指す（`sources/x.md [12:34]`）
 - `scripts/report.py <topic_dir> [--check]` — extracts.json の抜き書きを原文と照合し、合えば report.html にする。`--check` は照合だけ
 - `scripts/digest.py add <topic_dir> [--round N] [--by 誰]` — 標準入力の JSON（検索語ごとのヒット）を queries.jsonl に足す。`scripts/digest.py <topic_dir> [--check]` — digest.json の解説の引用を原文と照合し、合えば検索の記録と合わせて digest.html にする
+- `scripts/dashboard.py [research_dir] [--runs runs.md]` — 調査の置き場（既定 `~/research`）を走査して、調べものの履歴のページ `index.html` を作る。ホームに区切った理由・原文を取得した媒体・たどった周の数の集計、左の一覧から各調査の詳細（論点・周・原文・文書へのリンク）。数字はフォルダの記録から数え、記録の無い所は「記録なし」と出す
 - `scripts/watch.py add|list|check` — 見張り。RSS / Atom を引いて前回からの新着を出す。検索を使わないので費用はかからず結果も揺れない。DOCTYPE・ENTITY を含むフィードは安全のため読まない。フィードの場所にタブや改行が入っていたら足さない
 - `scripts/chain.py find|refs|cites|author [--log <topic_dir> --round N]` — OpenAlex で引用と著者をたどる。`--log` を付けると出した一覧を queries.jsonl に足す。1日 1,000 回まで無料の枠で、プリペイド残高が 0 なら超えても止まるだけ。**API キーや支払いの登録はしない**。古めの論文に強く、新しい論文と同名の多い著者に弱い（author は名前の検索の1位を使うので、同名の別人の論文を返すことがある。出力の「# 別の候補」に別人の ID が並ぶので、所属と論文数で確かめ、違えば `chain.py author A…` で引き直す。ただし OpenAlex の著者の記録は、古い論文ほど当てにならない。著者の欄に ID が無い論文や、同名の何人もの論文を1人にまとめた記録がある（試行では、情報探索の Ellis の 1989 年の論文には ID が無く、1993 年の論文は所属が国際ポテトセンターで論文289本の記録に入っていた）。著者で追うときは、所属先や本人のページにある論文の一覧を検索役に探させ、chain.py author の結果はその一覧と突き合わせる）
 - ファイル名は `<著者>-<年>-<短い題>`、arXiv は `arxiv-<番号>-<短い題>`

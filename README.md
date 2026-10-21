@@ -112,6 +112,8 @@ digest.json    詳細レポートの解説
 digest.html    詳細レポート（Lv1〜Lv3 の解説と、検索の全記録）
 ```
 
+`python3 skills/imozuru/scripts/dashboard.py ~/research` を回すと、すべての調査をまとめて見返すページ（`~/research/index.html`）ができます。
+
 抜き書きのページの見本は `examples/demo/` にあり、次のコマンドでスクリプトだけを試せます。
 
 ```sh

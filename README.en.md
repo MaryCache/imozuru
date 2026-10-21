@@ -118,6 +118,8 @@ digest.json    explanation for the detailed report
 digest.html    detailed report (explanations at Lv1 to Lv3, plus the full search record)
 ```
 
+Running `python3 skills/imozuru/scripts/dashboard.py ~/research` builds a page that brings every investigation together (`~/research/index.html`).
+
 A sample extract page is in `examples/demo/`, and this command tries the script on its own.
 
 ```sh
