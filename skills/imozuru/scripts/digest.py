@@ -127,6 +127,8 @@ def sentence_problems(src: Path, where: str, sentences) -> list[str]:
 
 
 CLAIM_STATUS = ("付いた", "一部だけ", "付かなかった")
+# digest.json の値は map.md と同じ言葉のまま、ページでは読み手の言葉で出す
+CLAIM_LABEL = {"付いた": "根拠あり", "一部だけ": "一部のみ", "付かなかった": "根拠なし"}
 SITES_SHOWN = 10
 
 
@@ -196,12 +198,12 @@ def level_html(src: Path, key: str, name: str, lead: str, lv: dict) -> str:
             body.append(f"<dt>{esc(t['term'])}</dt><dd>{sentences_html(src, t['sentences'])}</dd>")
         body.append("</dl>")
     if lv.get("answers"):
-        body.append("<h3>主張ごとの答え</h3>")
+        body.append("<h3>論点ごとの解説</h3>")
         for a in lv["answers"]:
             body.append(f'<h4>{esc(a["claim"])}</h4>{sentences_html(src, a["sentences"])}')
     if lv.get("quiz"):
         # 自分で思い出してから答えを見る形にする。読み返すより、自分をテストするほうが定着する（Dunlosky ら 2013）
-        body.append('<h3>確かめる問い</h3><p class="note">答えを見る前に、自分の言葉で答えてみる。</p>')
+        body.append('<h3>理解の確認</h3><p class="note">答えを見る前に、自分の言葉で答えてみる。</p>')
         for q in lv["quiz"]:
             body.append(f'<div class="quiz"><p class="q">{esc(q["q"])}</p><details class="ans"><summary>答えを見る</summary>'
                         + sentences_html(src, q["answer"]) + "</details></div>")
@@ -225,9 +227,9 @@ def overview_html(data: dict) -> str:
            f"<dt>調べたこと</dt><dd>{esc(data['question'])}</dd>",
            f"<dt>調査を区切った理由</dt><dd>{esc(data['stopped'])}</dd>"]
     if data.get("claims"):
-        items = "".join(f'<li><span class="st st{CLAIM_STATUS.index(c["status"])}">{esc(c["status"])}</span>{esc(c["claim"])}</li>'
+        items = "".join(f'<li><span class="st st{CLAIM_STATUS.index(c["status"])}">{CLAIM_LABEL[c["status"]]}</span>{esc(c["claim"])}</li>'
                         for c in data["claims"])
-        out.append(f'<dt>要る主張</dt><dd><ul class="claims">{items}</ul></dd>')
+        out.append(f'<dt>調査の論点</dt><dd><ul class="claims">{items}</ul></dd>')
     out.append("</dl>")
     return "".join(out)
 
@@ -263,7 +265,7 @@ def sites_html(records: list[dict], fetched: dict[str, dict]) -> str:
         return ('<div class="tablewrap"><table class="sites"><thead><tr><th>サイト</th><th></th>'
                 '<th>ヒット</th><th>保存</th><th>失敗</th></tr></thead><tbody>' + rows + "</tbody></table></div>")
     # 先頭は上位の SITES_SHOWN 件だけ。残りは畳む（一度に見せる量を絞る）
-    out = "<h3>見たサイト</h3>" + table(top[:SITES_SHOWN])
+    out = "<h3>参照したサイト</h3>" + table(top[:SITES_SHOWN])
     if len(top) > SITES_SHOWN:
         out += f"<details><summary>ほか {len(top) - SITES_SHOWN} サイト</summary>{table(top[SITES_SHOWN:])}</details>"
     return out
@@ -274,11 +276,11 @@ def records_html(records: list[dict], fetched: dict[str, dict]) -> str:
     linked = set()
     total_hits = sum(len(r["hits"]) for r in records)
     empty = sum(1 for r in records if not r["hits"])
-    body = ['<section id="record"><h2>記録<span class="status">機械で生成</span></h2>',
+    body = ['<section id="record"><h2>調査記録<span class="status">自動生成</span></h2>',
             f'<p class="note">検索 {len(records)}本・ヒット {total_hits}件・空振り {empty}本。'
             "ヒットは検索で挙がったものの全件で、〔保存〕は原文を保存できたもの。</p>",
             sites_html(records, fetched),
-            "<h3>検索語ごとの全件</h3>"]
+            "<h3>検索語別の全結果</h3>"]
     for rnd in sorted({r["round"] for r in records}):
         rs = [r for r in records if r["round"] == rnd]
         n_hits = sum(len(r["hits"]) for r in rs)
@@ -386,17 +388,17 @@ def build(topic: Path, check_only: bool) -> int:
     nav = ['<a href="#explain">解説</a>']
     body = [f"<h1>{esc(data['title'])}</h1>", overview_html(data),
             '<p class="note">解説の文を押すと、その文の根拠として原文からそのまま切り出した引用（機械で照合済み）が開く。'
-            "解説はエージェントが書いた。記録の層は機械で組んだ。</p>"]
+            "解説はエージェントが書き、調査記録は機械で生成した。</p>"]
     sections = [levels_html(src, data)]
     if data.get("people_places"):
-        sections.append('<section id="people"><h2>人と場</h2>' + sentences_html(src, data["people_places"]) + "</section>")
-        nav.append('<a href="#people">人と場</a>')
+        sections.append('<section id="people"><h2>主な人物と媒体</h2>' + sentences_html(src, data["people_places"]) + "</section>")
+        nav.append('<a href="#people">人物と媒体</a>')
     if data.get("unresolved"):
-        sections.append('<section id="open"><h2>未解決</h2><ul>'
+        sections.append('<section id="open"><h2>未解決の点</h2><ul>'
                         + "".join(f"<li>{esc(u)}</li>" for u in data["unresolved"]) + "</ul></section>")
-        nav.append('<a href="#open">未解決</a>')
+        nav.append('<a href="#open">未解決の点</a>')
     sections.append(records_html(records, fetched))
-    nav.append('<a href="#record">記録</a>')
+    nav.append('<a href="#record">調査記録</a>')
     body.append("<nav>" + "".join(nav) + "</nav>")
     body += sections
     body.append(f'<footer>imozuru の詳細レポート・原文はこのページと同じ場所の {esc(src.name)}/</footer>')

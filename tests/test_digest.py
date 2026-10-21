@@ -142,7 +142,7 @@ class DigestTests(unittest.TestCase):
         self.data["levels"]["lv1"]["quiz"] = [{"q": "なぜ赤い？", "answer": [sentence("青が先に散る。")]}]
         code, _ = self.build()
         self.assertEqual(code, 0)
-        self.assertIn("確かめる問い", (self.topic / "digest.html").read_text(encoding="utf-8"))
+        self.assertIn("理解の確認", (self.topic / "digest.html").read_text(encoding="utf-8"))
 
     def test_claim_status_is_checked(self):
         self.data["claims"] = [{"claim": "仕組み", "status": "たぶん"}]
