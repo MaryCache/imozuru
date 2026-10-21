@@ -304,8 +304,8 @@ def records_html(records: list[dict], fetched: dict[str, dict]) -> str:
         body.append("</details>")
     loose = [f for k, f in fetched.items() if k not in linked]
     if loose:
-        body.append("<h3>どの検索にも結び付かない取得</h3>"
-                    '<p class="note">記事の中のリンクをたどったものや、検索の URL と取得の URL が違うもの。</p><ul class="hits">')
+        body.append("<h3>検索結果以外から取得した原文</h3>"
+                    '<p class="note">記事の中のリンクの追跡、別の URL での取り直し、ブラウザでの取得など。</p><ul class="hits">')
         for f in loose:
             st = "保存" if f.get("status") == "OK" else "取得失敗"
             detail = f.get("file", "") if f.get("status") == "OK" else f.get("reason", "")
