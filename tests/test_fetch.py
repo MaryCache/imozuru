@@ -163,7 +163,7 @@ class FetchPreservationTests(unittest.TestCase):
         with patch.object(fetch, "download", side_effect=download), \
                 patch.object(fetch, "html_to_md", side_effect=self.markdown("Article body. " * 200)), \
                 patch.object(fetch, "pdf_to_text", side_effect=self.pdf_text("")), \
-                patch.object(fetch, "ocr_pdf", return_value=""):
+                patch.object(fetch, "ocr_pdf", return_value=("", "")):
             self.assertEqual(self.run_fetch(), 0)
         self.assertIn("Article body.", (self.sources / "paper.md").read_text(encoding="utf-8"))
         self.assertFalse((self.sources / "paper.pdf").exists())

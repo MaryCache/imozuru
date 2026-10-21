@@ -80,6 +80,7 @@ The scripts run on the Python 3.10+ standard library alone, and use the followin
 |---|---|---|
 | `pdftotext` (poppler or Xpdf) | Extracting text from PDFs | The PDF text cannot be read and the fetch reports `FAIL` |
 | `pdftoppm` (poppler or Xpdf) and `tesseract` | OCR for old PDFs with no text layer | That PDF reports `FAIL` |
+| `tesseract` language data `jpn` and `jpn_vert` | Reading Japanese scans, both horizontal and vertical (used automatically when installed; set `IMOZURU_OCR_LANG`, e.g. `jpn+eng`, to choose) | OCR runs in English only; a Japanese PDF reports `FAIL` because the recognition confidence is low |
 | `yt-dlp` | Downloading YouTube captions | Videos report `FAIL` |
 | [ax](https://github.com/yusukebe/ax) | Turning HTML into Markdown | Falls back to the standard library and extracts the text only (ax keeps headings and tables better) |
 

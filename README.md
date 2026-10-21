@@ -76,6 +76,7 @@ npx skills add MaryCache/imozuru
 |---|---|---|
 | `pdftotext`（popplerかXpdf） | PDFから本文を取り出す | PDFの本文が取れず `FAIL` になる |
 | `pdftoppm`（popplerかXpdf）と `tesseract` | 文字の層がない古いPDFをOCRにかける | そのPDFは `FAIL` になる |
+| `tesseract` の言語データ `jpn` と `jpn_vert` | 日本語のスキャンPDFを、横書きも縦書きも読む（入っていれば自動で使う。環境変数 `IMOZURU_OCR_LANG` で `jpn+eng` のように指定もできる） | 英語だけで読む。日本語のPDFは読み取りの確信度が低いので `FAIL` になる |
 | `yt-dlp` | YouTubeの字幕を取得する | 動画は `FAIL` になる |
 | [ax](https://github.com/yusukebe/ax) | HTMLをmarkdownにする | 標準ライブラリで文字だけを取り出す（見出しや表の形はaxのほうがよく残る） |
 

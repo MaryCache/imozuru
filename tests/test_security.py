@@ -216,7 +216,7 @@ class ToolLimitTests(unittest.TestCase):
             pdf.write_bytes(b"%PDF-1.4")
             self.assertEqual(fetch.pdf_to_text(pdf), "")
             self.assertFalse(pdf.with_suffix(".txt").exists())
-            self.assertEqual(fetch.ocr_pdf(pdf), "")
+            self.assertEqual(fetch.ocr_pdf(pdf)[0], "")
             self.assertEqual(fetch.youtube_to_md("https://youtu.be/a", Path(tmp) / "t.md"), "")
             with patch.object(fetch, "HAS_AX", True):
                 self.assertEqual(fetch.html_to_md("https://example.test/", Path(tmp) / "h.md",
@@ -250,7 +250,7 @@ class ToolLimitTests(unittest.TestCase):
                 patch.object(fetch, "missing", return_value=[]):
             pdf = Path(tmp) / "a.pdf"
             pdf.with_suffix(".txt").write_text("short text layer", encoding="utf-8")
-            self.assertEqual(fetch.ocr_if_longer(pdf, "short text layer"), "short text layer")
+            self.assertEqual(fetch.ocr_if_longer(pdf, "short text layer")[0], "short text layer")
             self.assertEqual(pdf.with_suffix(".txt").read_text(encoding="utf-8"), "short text layer")
 
 
@@ -619,3 +619,95 @@ class DeepSeekSplitReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OcrLanguageTests(unittest.TestCase):
+    """#11: OCR が eng 固定で、日本語のスキャン PDF が意味のない英字の列のまま保存されうる。"""
+
+    @staticmethod
+    def listing(*names, stream="stdout"):
+        text = 'List of available languages in "/x/tessdata/" (%d):\n' % len(names) + "\n".join(names) + "\n"
+        out, err = (text, "") if stream == "stdout" else ("", text)
+        return lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, out, err)
+
+    def langs(self, run, env=None):
+        with patch.dict(os.environ, env or {}, clear=False), patch.object(fetch, "run_tool", side_effect=run):
+            if not env:
+                os.environ.pop("IMOZURU_OCR_LANG", None)
+            return fetch.ocr_langs()
+
+    def test_adds_japanese_when_installed(self):
+        self.assertEqual(self.langs(self.listing("eng", "jpn", "jpn_vert", "osd")), "jpn+jpn_vert+eng")
+
+    def test_old_tesseract_lists_on_stderr(self):
+        self.assertEqual(self.langs(self.listing("eng", "jpn", stream="stderr")), "jpn+eng")
+
+    def test_vertical_alone_is_not_taken_for_jpn(self):
+        self.assertEqual(self.langs(self.listing("eng", "jpn_vert")), "jpn_vert+eng")
+
+    def test_listing_failure_falls_back_to_eng(self):
+        self.assertEqual(self.langs(lambda cmd, **kw: None), "eng")
+
+    def test_environment_overrides(self):
+        never = MagicMock(side_effect=AssertionError("一覧は引かない"))
+        self.assertEqual(self.langs(never, {"IMOZURU_OCR_LANG": "jpn+eng"}), "jpn+eng")
+
+    def test_malformed_environment_is_ignored(self):
+        for bad in ("eng --psm 0", "-l", "eng;x", "jpn+", "../eng"):
+            with self.subTest(bad=bad), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.langs(self.listing("eng"), {"IMOZURU_OCR_LANG": bad}), "eng")
+
+    def fake_tools(self, conf, fail_page=None):
+        """pdftoppm は2ページの画像を、tesseract は txt と tsv を書く偽物。"""
+        def run(cmd, **kw):
+            if cmd[0] == "pdftoppm":
+                for n in ("1", "2"):
+                    Path(f"{cmd[-1]}-{n}.png").write_bytes(b"png")
+                return subprocess.CompletedProcess(cmd, 0)
+            if cmd[1] == "--list-langs":
+                return subprocess.CompletedProcess(cmd, 0, "eng\n", "")
+            if fail_page and cmd[1].endswith(f"-{fail_page}.png"):
+                return None
+            out = Path(cmd[2])
+            out.with_suffix(".txt").write_text("HRIRROVRCA WASORRO " * 50, encoding="utf-8")
+            out.with_suffix(".tsv").write_text(
+                "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+                "4\t1\t1\t1\t1\t0\t0\t0\t9\t9\t-1\t\n"
+                f"5\t1\t1\t1\t1\t1\t0\t0\t9\t9\t{conf}\tHRIRROVRCA\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return run
+
+    def ocr(self, run):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(fetch, "run_tool", side_effect=run), \
+                patch.object(fetch, "missing", return_value=[]), patch.dict(os.environ, {"IMOZURU_OCR_LANG": ""}):
+            pdf = Path(tmp) / "a.pdf"
+            result = fetch.ocr_pdf(pdf)
+            self.assertFalse((Path(tmp) / ".a-ocr").exists())  # 画像の置き場は残さない
+            return result
+
+    def test_low_confidence_text_is_not_used(self):
+        text, note = self.ocr(self.fake_tools(conf=18.4))
+        self.assertEqual(text, "")
+        self.assertIn("確信度が低い", note)
+
+    def test_confident_text_is_used(self):
+        text, note = self.ocr(self.fake_tools(conf=90))
+        self.assertIn("=== page 2 ===", text)
+        self.assertEqual(note, "")
+
+    def test_a_timed_out_page_fails_the_whole_ocr(self):
+        text, note = self.ocr(self.fake_tools(conf=90, fail_page="2"))
+        self.assertEqual(text, "")
+        self.assertIn("読めなかったページ", note)
+
+    def test_fail_line_names_the_ocr_reason(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(fetch, "download", return_value=(b"%PDF-1.4\nscan", "application/pdf")), \
+                patch.object(fetch, "pdf_to_text", return_value=""), \
+                patch.object(fetch, "missing", return_value=[]), \
+                patch.object(fetch, "ocr_pdf", return_value=("", "OCR の確信度が低い（平均 18・言語 eng）")), \
+                patch.object(fetch, "resolve", lambda host: {PUBLIC_IP}), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            with patch.object(sys, "argv", ["fetch.py", tmp, "scan", "https://example.test/scan.pdf"]):
+                self.assertEqual(fetch.main(), 1)
+        self.assertIn("確信度が低い", out.getvalue())
