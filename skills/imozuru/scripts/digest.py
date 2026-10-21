@@ -20,13 +20,16 @@
 
 digest.json の形:
     {"title", "question", "stopped",
+     "claims"?: [{"claim", "status": "付いた|一部だけ|付かなかった"}],
      "levels": {"lv1": 編, "lv2": 編, "lv3": 編},
      "people_places": [文], "unresolved": ["..."]}
-    編 = {"summary": [文], "terms": [{"term", "sentences": [文]}], "answers": [{"claim", "sentences": [文]}]}
+    編 = {"summary": [文], "terms": [{"term", "sentences": [文]}], "answers": [{"claim", "sentences": [文]}],
+          "quiz"?: [{"q", "answer": [文]}]}
     文 = {"text", "quotes": [{"file", "line", "end"?, "text"}]}
 """
 
-import html
+import base64
+import hashlib
 import json
 import os
 import re
@@ -123,6 +126,10 @@ def sentence_problems(src: Path, where: str, sentences) -> list[str]:
     return bad
 
 
+CLAIM_STATUS = ("付いた", "一部だけ", "付かなかった")
+SITES_SHOWN = 10
+
+
 def check(topic: Path, data: dict) -> list[str]:
     src = topic / "sources"
     bad = []
@@ -137,6 +144,15 @@ def check(topic: Path, data: dict) -> list[str]:
             bad += sentence_problems(src, f"{name}の用語「{t.get('term')}」", t.get("sentences"))
         for a in lv.get("answers") or []:
             bad += sentence_problems(src, f"{name}の主張「{a.get('claim')}」", a.get("sentences"))
+        # 確かめる問いの答えも解説と同じく原文で裏づける。問いの文そのものは主張を含まないので照合しない
+        for q in lv.get("quiz") or []:
+            if not isinstance(q, dict) or not str(q.get("q") or "").strip():
+                bad.append(f"{name}の問い: q が無い")
+                continue
+            bad += sentence_problems(src, f"{name}の問い「{q['q'][:20]}」の答え", q.get("answer"))
+    for c in data.get("claims") or []:
+        if not isinstance(c, dict) or c.get("status") not in CLAIM_STATUS:
+            bad.append(f"主張の状態は {'・'.join(CLAIM_STATUS)} のどれか: {json.dumps(c, ensure_ascii=False)[:60]}")
     if data.get("people_places"):
         bad += sentence_problems(src, "人と場", data["people_places"])
     return bad
@@ -152,61 +168,117 @@ def link(url: str, text: str) -> str:
     return esc(text or url)
 
 
-class Notes:
-    """編ごとの脚注。文の後ろに [n] を付け、引用は節の末尾に並べる。"""
+def sentence_html(src: Path, s: dict) -> str:
+    """1文を開閉できる行にする。押すと根拠の引用がその文のすぐ下に開く。
 
-    def __init__(self, src: Path, prefix: str):
-        self.src, self.prefix, self.items = src, prefix, []
+    根拠を節の末尾にまとめると、文と引用が離れて、読み手が両者を突き合わせる手間が増える
+    （分割注意効果）。文と引用を同じ場所に置く。
+    """
+    quotes = []
+    for q in s["quotes"]:
+        _, ctx, c0, _ = report.verify(src, q)
+        quotes.append(report.quote_html(src, q, ctx, c0))
+    return (f'<details class="s"><summary>{esc(s["text"])}<span class="mk">原文 {len(quotes)}</span></summary>'
+            + "".join(quotes) + "</details>")
 
-    def sentence(self, s: dict) -> str:
-        marks = []
-        for q in s["quotes"]:
-            self.items.append(q)
-            n = len(self.items)
-            marks.append(f'<a class="fn" href="#{self.prefix}{n}">[{n}]</a>')
-        return esc(s["text"]) + "".join(marks)
 
-    def paragraph(self, sentences: list[dict]) -> str:
-        # 1文ごとに改行する。続けて組むと、どの番号がどの文の根拠かを目で追いにくい
-        return '<p class="lines">' + "".join(f"<span>{self.sentence(s)}</span>" for s in sentences) + "</p>"
-
-    def render(self) -> str:
-        if not self.items:
-            return ""
-        out = ['<details class="notes"><summary>根拠の原文（' + str(len(self.items)) + '件）</summary><ol>']
-        for n, q in enumerate(self.items, 1):
-            _, ctx, c0, _ = report.verify(self.src, q)
-            out.append(f'<li id="{self.prefix}{n}">' + report.quote_html(self.src, q, ctx, c0) + "</li>")
-        out.append("</ol></details>")
-        return "\n".join(out)
+def sentences_html(src: Path, sentences: list[dict]) -> str:
+    return '<div class="lines">' + "".join(sentence_html(src, s) for s in sentences) + "</div>"
 
 
 def level_html(src: Path, key: str, name: str, lead: str, lv: dict) -> str:
-    notes = Notes(src, f"{key}-")
-    body = [f'<section id="{key}"><h2>{esc(name)}<span class="status">{esc(lead)}</span></h2>',
-            "<h3>要旨</h3>", notes.paragraph(lv["summary"])]
+    # タブと同じ名前を本文の見出しに重ねない（同じ情報を二重に見せると負担になる）。読み上げ用にだけ残す
+    body = [f'<section class="lv {key}" id="{key}"><h2 class="sr">{esc(name)}（{esc(lead)}）</h2>',
+            "<h3>要旨</h3>", sentences_html(src, lv["summary"])]
     if lv.get("terms"):
         body.append("<h3>用語</h3><dl>")
         for t in lv["terms"]:
-            body.append(f"<dt>{esc(t['term'])}</dt><dd>{notes.paragraph(t['sentences'])}</dd>")
+            body.append(f"<dt>{esc(t['term'])}</dt><dd>{sentences_html(src, t['sentences'])}</dd>")
         body.append("</dl>")
     if lv.get("answers"):
         body.append("<h3>主張ごとの答え</h3>")
         for a in lv["answers"]:
-            body.append(f'<h4>{esc(a["claim"])}</h4>{notes.paragraph(a["sentences"])}')
-    body.append(notes.render())
+            body.append(f'<h4>{esc(a["claim"])}</h4>{sentences_html(src, a["sentences"])}')
+    if lv.get("quiz"):
+        # 自分で思い出してから答えを見る形にする。読み返すより、自分をテストするほうが定着する（Dunlosky ら 2013）
+        body.append('<h3>確かめる問い</h3><p class="note">答えを見る前に、自分の言葉で答えてみる。</p>')
+        for q in lv["quiz"]:
+            body.append(f'<div class="quiz"><p class="q">{esc(q["q"])}</p><details class="ans"><summary>答えを見る</summary>'
+                        + sentences_html(src, q["answer"]) + "</details></div>")
     body.append("</section>")
     return "\n".join(body)
 
 
+def levels_html(src: Path, data: dict) -> str:
+    """3編を切り替えて1編ずつ見せる。全部を縦に並べると、初学者には多すぎ、慣れた人には重複が多い
+    （熟達化の逆転効果）。切り替えは CSS だけで動き、選んだ編の記憶だけを小さなスクリプトが受け持つ。"""
+    inputs = "".join(f'<input type="radio" name="lv" id="t-{k}"{" checked" if i == 0 else ""}>'
+                     for i, (k, _, _) in enumerate(LEVELS))
+    tabs = "".join(f'<label for="t-{k}">{esc(n)}<small>{esc(lead)}</small></label>' for k, n, lead in LEVELS)
+    sections = "".join(level_html(src, k, n, lead, data["levels"][k]) for k, n, lead in LEVELS)
+    return f'<div class="levels" id="explain">{inputs}<div class="tabs">{tabs}</div>{sections}</div>'
+
+
+def overview_html(data: dict) -> str:
+    """冒頭は3つに絞る: 調べたこと・調査を区切った理由・主張ごとの付き具合。詳しいものは下へ（概観から詳細へ）。"""
+    out = ['<dl class="overview">',
+           f"<dt>調べたこと</dt><dd>{esc(data['question'])}</dd>",
+           f"<dt>調査を区切った理由</dt><dd>{esc(data['stopped'])}</dd>"]
+    if data.get("claims"):
+        items = "".join(f'<li><span class="st st{CLAIM_STATUS.index(c["status"])}">{esc(c["status"])}</span>{esc(c["claim"])}</li>'
+                        for c in data["claims"])
+        out.append(f'<dt>要る主張</dt><dd><ul class="claims">{items}</ul></dd>')
+    out.append("</dl>")
+    return "".join(out)
+
+
+def hit_status(h: dict, fetched: dict[str, dict]) -> tuple[dict | None, str | None]:
+    for u in [h["url"], *h.get("also", [])]:
+        k = url_key(u)
+        if k in fetched:
+            return fetched[k], k
+    return None, None
+
+
+def sites_html(records: list[dict], fetched: dict[str, dict]) -> str:
+    """どのサイトを見て、何件保存・失敗したか。操作の順に並べるより、どこを見たかの要約のほうが
+    後から読む人の理解を妨げない（Block ら 2022）。件数は共通の目盛りの横棒で比べる（位置が最も正確に読める）。"""
+    sites: dict[str, list[int]] = {}
+    for r in records:
+        for h in r["hits"]:
+            host = (urlsplit(h["url"]).hostname or "?").removeprefix("www.")
+            row = sites.setdefault(host, [0, 0, 0])
+            row[0] += 1
+            f, _ = hit_status(h, fetched)
+            if f is not None:
+                row[1 if f.get("status") == "OK" else 2] += 1
+    if not sites:
+        return ""
+    top = sorted(sites.items(), key=lambda kv: (-kv[1][0], kv[0]))
+    peak = top[0][1][0]
+
+    def table(items) -> str:
+        rows = "".join(f'<tr><th scope="row">{esc(host)}</th><td class="bar"><span style="width:{n / peak * 100:.1f}%"></span></td>'
+                       f"<td>{n}</td><td>{ok or ''}</td><td>{ng or ''}</td></tr>" for host, (n, ok, ng) in items)
+        return ('<div class="tablewrap"><table class="sites"><thead><tr><th>サイト</th><th></th>'
+                '<th>ヒット</th><th>保存</th><th>失敗</th></tr></thead><tbody>' + rows + "</tbody></table></div>")
+    # 先頭は上位の SITES_SHOWN 件だけ。残りは畳む（一度に見せる量を絞る）
+    out = "<h3>見たサイト</h3>" + table(top[:SITES_SHOWN])
+    if len(top) > SITES_SHOWN:
+        out += f"<details><summary>ほか {len(top) - SITES_SHOWN} サイト</summary>{table(top[SITES_SHOWN:])}</details>"
+    return out
+
+
 def records_html(records: list[dict], fetched: dict[str, dict]) -> str:
-    """検索の全記録。周ごとに折りたたみ、検索語ごとにヒットを全件並べる。"""
+    """検索の全記録。サイトごとの集計を先に置き、検索語ごとの全件は周ごとに折りたたむ。"""
     linked = set()
     total_hits = sum(len(r["hits"]) for r in records)
     empty = sum(1 for r in records if not r["hits"])
     body = ['<section id="record"><h2>記録<span class="status">機械で生成</span></h2>',
             f'<p class="note">検索 {len(records)}本・ヒット {total_hits}件・空振り {empty}本。'
-            "ヒットは検索で挙がったものの全件で、〔保存〕は fetch.py が原文を保存できたもの。</p>"]
+            "ヒットは検索で挙がったものの全件で、〔保存〕は原文を保存できたもの。</p>",
+            sites_html(records, fetched),
+            "<h3>検索語ごとの全件</h3>"]
     for rnd in sorted({r["round"] for r in records}):
         rs = [r for r in records if r["round"] == rnd]
         n_hits = sum(len(r["hits"]) for r in rs)
@@ -218,13 +290,9 @@ def records_html(records: list[dict], fetched: dict[str, dict]) -> str:
                 continue
             body.append("<ul class=\"hits\">")
             for h in r["hits"]:
-                f = None
-                for u in [h["url"], *h.get("also", [])]:
-                    k = url_key(u)
-                    if k in fetched:
-                        f = fetched[k]
-                        linked.add(k)
-                        break
+                f, k = hit_status(h, fetched)
+                if k:
+                    linked.add(k)
                 if f is None:
                     tag = '<span class="tag">未取得</span>'
                 elif f.get("status") == "OK":
@@ -241,7 +309,8 @@ def records_html(records: list[dict], fetched: dict[str, dict]) -> str:
         for f in loose:
             st = "保存" if f.get("status") == "OK" else "取得失敗"
             detail = f.get("file", "") if f.get("status") == "OK" else f.get("reason", "")
-            body.append(f'<li><span class="tag">{st}</span> {link(f["url"], f["url"])} <code>{esc(detail)}</code></li>')
+            via = f'<span class="cn">{esc(f["via"])}</span>' if f.get("via") else ""
+            body.append(f'<li><span class="tag">{st}</span> {link(f["url"], f["url"])} <code>{esc(detail)}</code>{via}</li>')
         body.append("</ul>")
     body.append("</section>")
     return "\n".join(body)
@@ -254,17 +323,50 @@ h3{font-size:1.05rem;margin:2rem 0 .3rem}
 h4{font-size:.95rem;margin:1.2rem 0 .2rem}
 dt{font-weight:600;margin-top:1rem}
 dd{margin:0}
-dd p{margin:.2rem 0}
-p.lines span{display:block;margin:.15rem 0}
-a.fn{font-size:.7rem;vertical-align:super;text-decoration:none;margin-left:.1rem}
+.overview{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.2rem 1rem 1rem;margin:1.2rem 0}
+.overview dt{font-size:.8rem;color:var(--sub);font-weight:400;margin-top:.8rem}
+ul.claims{list-style:none;padding:0;margin:.3rem 0 0}
+ul.claims li{margin:.35rem 0;display:flex;gap:.5rem;align-items:baseline}
+.st{flex:none;font-size:.72rem;border:1px solid var(--accent);color:var(--accent);border-radius:99px;padding:0 .45rem}
+.st1{border-style:dotted}
+.st2{border-style:dashed;color:var(--sub);border-color:var(--sub)}
+.levels>input{position:absolute;opacity:0;pointer-events:none}
+.tabs{display:flex;gap:.4rem;margin:2.5rem 0 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tabs label{cursor:pointer;padding:.45rem .9rem .5rem;border:1px solid var(--line);border-bottom:none;border-radius:8px 8px 0 0;color:var(--sub);font-weight:600}
+.tabs label small{display:block;font-weight:400;font-size:.7rem}
+.lv{display:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+#t-lv1:checked~.lv1,#t-lv2:checked~.lv2,#t-lv3:checked~.lv3{display:block}
+#t-lv1:checked~.tabs label[for=t-lv1],#t-lv2:checked~.tabs label[for=t-lv2],#t-lv3:checked~.tabs label[for=t-lv3]{color:var(--ink);background:var(--card);border-color:var(--accent)}
+.levels>input:focus-visible~.tabs{outline:2px solid var(--accent);outline-offset:2px}
+.lines{margin:.3rem 0}
+details.s{margin:.15rem 0;font-size:1rem}
+details.s>summary{list-style:none;cursor:pointer;padding:.15rem 0;color:var(--ink)}
+details.s>summary::-webkit-details-marker{display:none}
+.mk{font-size:.68rem;color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:0 .3rem;margin-left:.4rem;white-space:nowrap;vertical-align:.1em}
+details.s[open]>summary .mk{background:var(--hit)}
+details.s .quote{margin:.4rem 0 .8rem}
+.quiz{border-left:3px solid var(--line);padding-left:.8rem;margin:1rem 0}
+.quiz .q{margin:.2rem 0;font-weight:600}
 .meta{font-weight:400;font-size:.8rem;color:var(--sub);margin-left:.5rem}
 ul.hits{padding-left:1.1rem;font-size:.88rem}
 ul.hits li{margin:.25rem 0;overflow-wrap:anywhere}
 .tag.ok{border-color:var(--accent);color:var(--accent)}
 .tag.ng{border-style:dashed}
-.notes ol{padding-left:1.4rem}
 .cn{font-size:.8rem;color:var(--sub);margin-left:.3rem}
+.tablewrap{overflow-x:auto}
+table.sites{border-collapse:collapse;font-size:.82rem;width:100%;font-variant-numeric:tabular-nums}
+table.sites th,table.sites td{padding:.2rem .3rem;text-align:right;white-space:nowrap}
+table.sites th[scope=row]{text-align:left;font-weight:400;max-width:9rem;overflow:hidden;text-overflow:ellipsis}
+table.sites thead th{color:var(--sub);font-weight:400;border-bottom:1px solid var(--line)}
+td.bar{width:30%;min-width:3rem}
+td.bar span{display:block;height:.55rem;background:var(--accent);opacity:.55;border-radius:2px}
 """
+
+# 選んだ編を覚えておくだけのスクリプト。保存できない環境（非公開の窓など）でも、ページは CSS だけで動く
+REMEMBER_JS = ("try{var k='imozuru-digest-lv',v=localStorage.getItem(k),e=v&&document.getElementById(v);"
+               "if(e)e.checked=true;document.querySelectorAll('input[name=lv]').forEach(function(i){"
+               "i.addEventListener('change',function(){try{localStorage.setItem(k,i.id)}catch(x){}})})}catch(x){}")
 
 
 def build(topic: Path, check_only: bool) -> int:
@@ -281,17 +383,13 @@ def build(topic: Path, check_only: bool) -> int:
 
     src = topic / "sources"
     fetched = fetch_status(load_jsonl(topic / FETCH_LOG))
-    nav = [f'<a href="#{k}">{n}</a>' for k, n, _ in LEVELS]
-    body = [f"<h1>{esc(data['title'])}</h1>",
-            f'<p class="lead">調べたこと: {esc(data["question"])}</p>',
-            f'<p class="lead">調査を区切った理由: {esc(data["stopped"])}</p>',
-            '<p class="note">解説の文の後ろの番号は、その文の根拠として原文からそのまま切り出した引用（機械で照合済み）。'
+    nav = ['<a href="#explain">解説</a>']
+    body = [f"<h1>{esc(data['title'])}</h1>", overview_html(data),
+            '<p class="note">解説の文を押すと、その文の根拠として原文からそのまま切り出した引用（機械で照合済み）が開く。'
             "解説はエージェントが書いた。記録の層は機械で組んだ。</p>"]
-    sections = [level_html(src, k, n, lead, data["levels"][k]) for k, n, lead in LEVELS]
+    sections = [levels_html(src, data)]
     if data.get("people_places"):
-        notes = Notes(src, "pp-")
-        sections.append('<section id="people"><h2>人と場</h2>' + notes.paragraph(data["people_places"])
-                        + notes.render() + "</section>")
+        sections.append('<section id="people"><h2>人と場</h2>' + sentences_html(src, data["people_places"]) + "</section>")
         nav.append('<a href="#people">人と場</a>')
     if data.get("unresolved"):
         sections.append('<section id="open"><h2>未解決</h2><ul>'
@@ -303,13 +401,15 @@ def build(topic: Path, check_only: bool) -> int:
     body += sections
     body.append(f'<footer>imozuru の詳細レポート・原文はこのページと同じ場所の {esc(src.name)}/</footer>')
 
+    # スクリプトは中身のハッシュで許可する。'unsafe-inline' にすると、原文から紛れ込んだ文字列も動きうる
+    digest_b64 = base64.b64encode(hashlib.sha256(REMEMBER_JS.encode()).digest()).decode()
     page = f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{digest_b64}'">
 <title>{esc(data['title'])} 詳細レポート</title><style>{CSS}</style></head>
 <body><main>
 {chr(10).join(body)}
-</main></body></html>
+</main><script>{REMEMBER_JS}</script></body></html>
 """
     out = topic / "digest.html"
     # 一時ファイルに書いてから置き換える。途中で止まっても前のページが壊れずに残る

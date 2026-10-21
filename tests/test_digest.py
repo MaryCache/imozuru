@@ -134,6 +134,43 @@ class DigestTests(unittest.TestCase):
         page = (self.topic / "digest.html").read_text(encoding="utf-8")
         self.assertNotIn('href="javascript:', page)
 
+    def test_quiz_answer_needs_quote(self):
+        self.data["levels"]["lv1"]["quiz"] = [{"q": "なぜ赤い？", "answer": [{"text": "根拠なし", "quotes": []}]}]
+        code, out = self.build()
+        self.assertEqual(code, 1)
+        self.assertIn("問い", out)
+        self.data["levels"]["lv1"]["quiz"] = [{"q": "なぜ赤い？", "answer": [sentence("青が先に散る。")]}]
+        code, _ = self.build()
+        self.assertEqual(code, 0)
+        self.assertIn("確かめる問い", (self.topic / "digest.html").read_text(encoding="utf-8"))
+
+    def test_claim_status_is_checked(self):
+        self.data["claims"] = [{"claim": "仕組み", "status": "たぶん"}]
+        self.assertEqual(self.build()[0], 1)
+        self.data["claims"] = [{"claim": "仕組み", "status": "一部だけ"}]
+        self.assertEqual(self.build()[0], 0)
+
+    def test_script_is_allowed_only_by_its_hash(self):
+        import base64
+        import hashlib
+        self.build()
+        page = (self.topic / "digest.html").read_text(encoding="utf-8")
+        h = base64.b64encode(hashlib.sha256(digest.REMEMBER_JS.encode()).digest()).decode()
+        self.assertIn(f"script-src 'sha256-{h}'", page)
+        self.assertNotIn("script-src 'unsafe-inline'", page)
+
+    def test_sites_table_counts_saved_and_failed(self):
+        self.add([{"query": "q", "hits": [{"title": "a", "url": "https://a.example.test/1"},
+                                          {"title": "b", "url": "https://a.example.test/2"}]}], "--round", "0")
+        (self.topic / "fetch-log.jsonl").write_text(
+            json.dumps({"url": "https://a.example.test/1", "name": "a", "status": "OK", "file": "a.md"}) + "\n"
+            + json.dumps({"url": "https://a.example.test/2", "name": "b", "status": "FAIL", "reason": "403"}) + "\n",
+            encoding="utf-8")
+        self.build()
+        page = (self.topic / "digest.html").read_text(encoding="utf-8")
+        self.assertIn('<th scope="row">a.example.test</th>', page)
+        self.assertIn("<td>2</td><td>1</td><td>1</td>", page)
+
     def test_add_rejects_record_without_hits_array(self):
         self.assertEqual(self.add([{"query": "q"}], "--round", "1"), 1)
         self.assertEqual(self.add([{"query": "q", "hits": []}]), 1)  # 周が無い
