@@ -231,6 +231,85 @@ class FetchPreservationTests(unittest.TestCase):
         self.assertIn(f"OK\tpaper\t{target}\t", self.stdout.getvalue())
         self.assertFalse(any(p.is_dir() for p in self.sources.iterdir()))
 
+    def test_bot_check_page_is_a_wall(self):
+        # HAL（hal.science）の Anubis が返した 1,297 字のページ。壁の文に掛かることを確かめる
+        self.seed(".md")
+        before = self.snapshot()
+        body = (b"<html><head><title>Making sure you&#39;re not a bot!</title></head><body>"
+                b"<h1>Making sure you're not a bot!</h1><p>Loading...</p><p>You are seeing this because "
+                b"the administrator of this website has set up Anubis to protect the server.</p>"
+                + b"<p>Anubis is a compromise. Anubis uses a Proof-of-Work scheme.</p>" * 20
+                + b"</body></html>")
+        with patch.object(fetch, "download", return_value=(body, "text/html")):
+            self.assertEqual(self.run_fetch("https://hal.science/hal-01577896"), 1)
+        self.assertIn("FAIL\tpaper\t壁に当たった（you're not a bot）", self.stdout.getvalue())
+        self.assert_preserved(before)
+
+    JATS = """<?xml version="1.0"?>
+<!DOCTYPE article PUBLIC "-//NLM//DTD JATS (Z39.96) Journal Archiving and Interchange DTD v1.4//EN" "JATS.dtd">
+<article xmlns:xlink="http://www.w3.org/1999/xlink"><front>
+<journal-meta><journal-title-group><journal-title>Mol Ecol</journal-title></journal-title-group></journal-meta>
+<article-meta><article-id pub-id-type="pmcid">PMC1234567</article-id>
+<article-id pub-id-type="doi">10.1111/mec.1</article-id>
+<title-group><article-title>Environmental <italic>DNA</italic> for biomonitoring</article-title></title-group>
+<contrib-group><contrib contrib-type="author"><name><surname>Pawlowski</surname><given-names>Jan</given-names></name></contrib></contrib-group>
+<pub-date><year>2021</year></pub-date>
+<abstract><p>Short abstract text.</p></abstract></article-meta></front>
+<body><sec><title>Introduction</title><p>First paragraph (<xref ref-type="bibr" rid="r1">Smith, 2020</xref>).</p>
+<p>Second paragraph with a <ext-link xlink:href="https://example.org/data">dataset</ext-link>.</p>
+<sec><title>Sub section</title><p>Nested paragraph.</p></sec></sec>
+<sec><title>Results</title><p>{filler}</p>
+<fig><label>Figure 1</label><caption><p>Caption of the figure.</p></caption><graphic xlink:href="f1.jpg"/></fig></sec></body>
+<back><ref-list><title>References</title><ref><label>1</label><element-citation><person-group>
+<name><surname>Smith</surname><given-names>J</given-names></name></person-group>
+<article-title>A paper</article-title><source>Nature</source><year>2020</year>
+<pub-id pub-id-type="doi">10.1038/x</pub-id></element-citation></ref></ref-list></back></article>
+""".replace("{filler}", "Results text. " * 100)
+
+    def test_pmc_url_is_fetched_from_europe_pmc_as_lines(self):
+        self.seed(".md")
+        with patch.object(fetch, "download", return_value=(self.JATS.encode(), "application/xml")) as dl:
+            self.assertEqual(self.run_fetch("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), 0)
+        self.assertEqual(dl.call_args.args[0],
+                         "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1234567/fullTextXML")
+        lines = (self.sources / "paper.md").read_text(encoding="utf-8").splitlines()
+        # 1行目は題名だけ。雑誌名や ID がつながらない
+        self.assertEqual(lines[0], "# Environmental DNA for biomonitoring")
+        self.assertIn("Mol Ecol / 2021 / https://doi.org/10.1111/mec.1 / PMC1234567", lines)
+        self.assertIn("著者: Jan Pawlowski", lines)
+        for line in ("## Abstract", "Short abstract text.", "## Introduction",
+                     "First paragraph (Smith, 2020).",
+                     "Second paragraph with a [dataset](https://example.org/data).",
+                     "### Sub section", "Nested paragraph.", "## Results",
+                     "[Figure 1] Caption of the figure.", "## References",
+                     "[1] Smith J A paper Nature 2020 10.1038/x https://doi.org/10.1038/x"):
+            self.assertIn(line, lines)
+        self.assertLess(lines.index("## Introduction"), lines.index("### Sub section"))
+        self.assertIn("OK\tpaper\t", self.stdout.getvalue())
+
+    def test_pmc_without_europe_pmc_full_text_fails_and_preserves(self):
+        self.seed(".md")
+        before = self.snapshot()
+        error = fetch.urllib.error.HTTPError("https://www.ebi.ac.uk/", 404, "Not Found", {}, None)
+        with patch.object(fetch, "download", side_effect=error):
+            self.assertEqual(self.run_fetch("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7654321/"), 1)
+        self.assertIn("FAIL\tpaper\tEurope PMC に全文 XML が無い", self.stdout.getvalue())
+        self.assert_preserved(before)
+
+    def test_pmc_is_recognized_by_host_not_anywhere_in_url(self):
+        self.assertEqual(fetch.pmc_id("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), "PMC1234567")
+        self.assertEqual(fetch.pmc_id("https://www.ncbi.nlm.nih.gov/pmc/articles/pmc1234567"), "PMC1234567")
+        self.assertEqual(fetch.pmc_id("https://europepmc.org/article/PMC/PMC1234567"), "PMC1234567")
+        # 他人のページの URL に書き込まれた PMCID の本文を、そのページの原文として保存しない
+        self.assertIsNone(fetch.pmc_id("https://evil.example/?next=pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"))
+        self.assertIsNone(fetch.pmc_id("https://pmc.ncbi.nlm.nih.gov.evil.example/articles/PMC1234567/"))
+
+    def test_jats_with_entity_declaration_is_refused(self):
+        xml = b'<?xml version="1.0"?><!DOCTYPE a [<!ENTITY x "xx">]><article>&x;</article>'
+        with patch.object(fetch, "download", return_value=(xml, "application/xml")):
+            self.assertEqual(self.run_fetch("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), 1)
+        self.assertIn("ENTITY", self.stdout.getvalue())
+
     def test_failed_first_fetch_leaves_no_partial_source(self):
         with patch.object(fetch, "download", return_value=(b"Short response", "text/plain")):
             self.assertEqual(self.run_fetch(), 1)
