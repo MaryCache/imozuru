@@ -29,6 +29,8 @@ esc = lambda s: html.escape(str(s), quote=True)  # noqa: E731
 
 # 区切った理由の自動分類。記録の文は書き手ごとに違うので、語で振り分ける。上から順に最初に当たったもの。
 # 分類はページで「自動分類」と明示し、元の文を必ず並べて見せる（分類の誤りを読み手が確かめられるように）
+# 区切った理由の分類ごとの標本の色（.rc1〜.rc4）。記録なしは色を付けず破線
+REASON_COLOR = {"論点に根拠がそろった": 1, "一部の論点を残して区切った": 2, "約束で打ち切り": 3, "取得の壁": 4}
 REASON_RULES = (
     ("約束で打ち切り", ("約束", "打ち切", "試験運転", "上限")),
     ("取得の壁", ("ログイン", "有料", "壁", "ボット", "CAPTCHA", "取れない", "取得できな", "購読")),
@@ -219,11 +221,26 @@ def main() -> int:
 LOGO = Path(__file__).resolve().parent.parent / "assets" / "logo.svg"
 SHOWN_HOSTS = 12
 
-# 色は DESIGN-imozuru.md の紙とセピアの墨から。棒の2色は dataviz の検証（validate_palette.js）を通した値。
-# 紅紫は「芋＝原文」だけに使う（DESIGN の決まり）。それ以外の数量はセピアの棒にする
+LOGO_LIGHT = LOGO.with_name("logo-light.svg")
+
+# 外観は「昆虫の標本箱」（2026-10-21 かしぇが3つの棚の見本から A を選んだ）。胡桃材の濃い地にガラス越しの面、
+# 標本の色を点で入れる。色はすべて OKLCH。標本の4色は dataviz の validate_palette.js を、
+# 暗い面 oklch(0.33 0.035 58) の上で全組み合わせ通した（色覚の差は注意の範囲＝文字ラベルを必ず添える）。
+# 案1・案2 はキーカラーとキーフォントだけを変えた見比べ用。決まったら1つにする
+THEMES = {
+    "1": {"bar": "oklch(0.62 0.13 75)", "src": "oklch(0.66 0.15 150)",
+          "r1": "oklch(0.62 0.14 245)", "r2": "oklch(0.66 0.15 150)", "r3": "oklch(0.62 0.13 75)", "r4": "oklch(0.56 0.17 345)",
+          "head": '"Shippori Mincho"', "font": "Shippori+Mincho:wght@500;700"},
+    "2": {"bar": "oklch(0.66 0.13 85)", "src": "oklch(0.6 0.15 350)",
+          "r1": "oklch(0.6 0.13 250)", "r2": "oklch(0.64 0.13 160)", "r3": "oklch(0.66 0.13 85)", "r4": "oklch(0.6 0.15 350)",
+          "head": '"Zen Old Mincho"', "font": "Zen+Old+Mincho:wght@500;700"},
+}
+THEME = THEMES[os.environ.get("IMOZURU_DASH_THEME", "1")]
+
 CSS = """
-:root{--paper:#f6efd3;--paper2:#ebe2c0;--ink:#482404;--sub:#6b4a26;--line:#d9c99c;--bar:#aa691b;--src:#8a3462;--card:#fbf6e2;
---serif:"Noto Serif JP","Hiragino Mincho ProN","Yu Mincho",serif;--head:"Shippori Mincho","Hiragino Mincho ProN","Yu Mincho",serif;--latin:"EB Garamond",Georgia,serif;color-scheme:light}
+:root{--paper:oklch(0.27 0.035 55);--paper2:oklch(0.21 0.03 50);--ink:oklch(0.93 0.02 85);--sub:oklch(0.76 0.03 80);
+--line:oklch(0.42 0.04 60);--card:oklch(0.32 0.035 58);--card2:oklch(0.36 0.035 60);
+--serif:"Noto Serif JP","Hiragino Mincho ProN","Yu Mincho",serif;--latin:"EB Garamond",Georgia,serif;color-scheme:dark}
 *{box-sizing:border-box}
 html,body{overflow-x:clip}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);font-size:16px;line-height:1.7}
@@ -299,7 +316,10 @@ footer{color:var(--sub);font-size:.78rem;margin-top:48px;border-top:1px solid va
 @media (max-width:760px){
  .layout{grid-template-columns:minmax(0,1fr)}
   /* Discord 型（takubase の OverlappingPanes に合わせた）。一覧は下に敷き、頭と本文が右へ退いて見せる */
- .side{position:fixed;top:0;left:0;height:100vh;height:100dvh;width:84vw;z-index:0;border-right:none}
+ /* 上下は画面の安全域（ノッチ・下のバー）の内側に合わせる。Artifact などの枠は :root に安全域ぶんの余白を足すので、
+    一覧だけ端まで伸びると本文より上下に大きく見えた（2026-10-21 かしぇ） */
+ .side{position:fixed;left:0;top:env(safe-area-inset-top,0px);bottom:env(safe-area-inset-bottom,0px);height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));align-self:stretch;width:84vw;z-index:0;border-right:none}
+ /* グリッドの子なので、パソコン用の align-self:start が固定配置にも効き、中身の高さ（24px）まで縮んだ。伸ばす指定に戻す */
  header,main{position:relative;z-index:1;transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1)}
  main{background:var(--paper);min-height:100dvh}
  /* 縦にスクロールする要素には、その要素自身に pan-y を宣言する。ブラウザは触れた所から最寄りの
@@ -327,6 +347,87 @@ footer{color:var(--sub);font-size:.78rem;margin-top:48px;border-top:1px solid va
  main h2{font-size:1.15rem}
 }
 @media (prefers-reduced-motion:reduce){header,main,.shade{transition:none!important}}
+/* --- 標本箱（2026-10-21 協議: カードの一式をやめ、大胆さは詳細の紙面1か所に集める） --- */
+/* 一番外側も塗る。塗らないと、枠が足した上下の余白に後ろの画面が透ける */
+html{background:var(--paper2)}
+:root{--ivory:oklch(0.94 0.025 85);--ivory-ink:oklch(0.3 0.03 55);--ivory-sub:oklch(0.44 0.03 60);--ivory-line:oklch(0.82 0.03 80)}
+/* 地は無地の胡桃材に、上から電灯を当てたような減光（色の転び・周辺減光）。縦縞の木目は作り物に見えたのでやめた。
+   スマホでは本文が下の一覧を隠す不透明な板なので、本文にも同じ地を敷く */
+body,main{background-color:var(--paper);background-image:radial-gradient(120% 90% at 35% -10%,oklch(0.34 0.045 62),transparent 60%),radial-gradient(140% 120% at 50% 50%,transparent 55%,oklch(0.17 0.025 50 / .7))}
+header{background:var(--paper2);border-bottom:1px solid var(--line)}
+header .ttl{display:none}
+main h2,main h3,aside h2{font-family:var(--head);font-weight:700}
+summary,.note{color:var(--sub)}
+a{color:var(--ink)}
+
+/* 一覧: カードをやめて、罫線で区切った密な目録。左端の太い帯が区切った理由の色＝色で探せる */
+aside ol{gap:0}
+aside a{background:none;border:0;border-bottom:1px solid var(--line);border-radius:0;box-shadow:none;padding:9px 10px 9px 16px;position:relative}
+aside a::before{content:"";position:absolute;left:2px;top:9px;bottom:9px;width:5px;border-radius:3px;background:var(--c,transparent);box-shadow:0 0 8px -1px var(--c,transparent)}
+aside a.none::before{background:none;border:1px dashed var(--line);width:3px}
+aside a:hover,aside a:focus-visible{background:oklch(1 0 0 / .05)}
+aside .m .chip{border:0;background:none;padding:0;color:var(--sub)}
+aside .m .chip::before{display:none}
+
+/* ホーム: 集計は箱に入れず、木の地に直接置く。見出しの書体と罫線で区切り、棒は太くして色の面積を増やす */
+.home .card{background:none;border:0;box-shadow:none;padding:0;margin:36px 0 44px}
+.home .card>h3{font-size:1.25rem;margin:0 0 6px;border-bottom:1px solid var(--line);padding-bottom:6px}
+td.bar span{height:14px;border-radius:0 3px 3px 0;background:var(--bar)}
+td.bar.src span{background:var(--src)}
+/* 「class に rc を含む」で書くと src も当たって原文の棒が消えた。番号で名指しする */
+td.bar.rc1 span,td.bar.rc2 span,td.bar.rc3 span,td.bar.rc4 span{background:var(--c)}
+thead th{border-bottom-color:var(--line)}
+
+/* チップ: 文字は墨のまま、標本の色は点で（文字を系列の色にしない） */
+.chip,.st{border:1px solid var(--line);color:var(--ink);background:oklch(0.2 0.03 50 / .45)}
+.chip::before,.st::before{content:"";display:inline-block;width:.6em;height:.6em;border-radius:50%;margin-right:.35em;vertical-align:.02em;background:var(--c,var(--sub))}
+.chip.none,.st.no{border-style:dashed;color:var(--sub)}
+.rc1{--c:var(--r1)}.rc2{--c:var(--r2)}.rc3{--c:var(--r3)}.rc4{--c:var(--r4)}
+.st{--c:var(--r1)}.st.part{--c:var(--r3);border-style:solid}.st.no{--c:transparent}
+
+/* 詳細: 胡桃材にピンで留めた象牙色の紙面。ページの中で一番大きく、一番明るい面＝大胆さはここだけ。
+   紙の繊維は SVG のノイズを一度だけ絵にして敷く（スクロールのたびに計算させない） */
+.topic{position:relative;background-color:var(--ivory);color:var(--ivory-ink);border-radius:3px;padding:30px 30px 24px;margin-top:8px;
+background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.012 .55' numOctaves='3' seed='9'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .27 0 0 0 0 .18 0 0 0 .08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
+box-shadow:0 1px 0 oklch(1 0 0 / .5) inset,0 2px 0 oklch(0.2 0.03 50 / .35),0 26px 44px -20px oklch(0.08 0.02 50 / .95)}
+.topic::before{content:"";position:absolute;top:-7px;left:50%;width:16px;height:16px;margin-left:-8px;border-radius:50%;
+background:radial-gradient(circle at 35% 30%,oklch(1 0 0 / .8),var(--c,var(--ivory-sub)) 45%,oklch(0.2 0.03 50) 100%);box-shadow:0 3px 4px oklch(0.1 0.02 50 / .6)}
+.topic h2,.topic a{color:var(--ivory-ink)}
+.topic .note,.topic dt,.topic summary{color:var(--ivory-sub)}
+.topic .card{background:none;border:0;box-shadow:none;padding:0;margin:22px 0 0}
+.topic .card>h3{border-bottom-color:var(--ivory-line);font-size:1.02rem}
+.topic .chip,.topic .st{border-color:var(--ivory-line);color:var(--ivory-ink);background:oklch(1 0 0 / .45)}
+.topic .docs a{background:oklch(1 0 0 / .5);border:1px solid var(--ivory-line);color:var(--ivory-ink)}
+.topic .docs a:hover,.topic .docs a:focus-visible{border-color:var(--ivory-ink)}
+.topic .hosts span{border-color:var(--ivory-line);background:oklch(1 0 0 / .4)}
+.topic .hosts b{color:var(--ivory-sub)}
+/* 切り替えは View Transitions でつなぐ。一覧の題名が紙面の見出しまで移って大きくなり、ほかは重ねて入れ替わる。
+   対応しないブラウザと、動きを減らす設定では即座に切り替わる（下の留まる動きだけ残る） */
+::view-transition-old(root),::view-transition-new(root){animation-duration:.32s;animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+::view-transition-group(specimen){animation-duration:.38s;animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+::view-transition-old(specimen),::view-transition-new(specimen){height:100%;object-fit:none;object-position:left top}
+html.vt .topic:target{animation:none!important}
+/* 選んだときの動きは1つだけ: 紙面が上から留まる */
+@media (prefers-reduced-motion:no-preference){.topic:target{animation:pinned .32s cubic-bezier(.2,.8,.2,1)}
+@keyframes pinned{from{opacity:0;transform:translateY(-12px) rotate(-.5deg)}to{opacity:1;transform:none}}}
+
+.grip{background:var(--paper2);border-color:var(--line)}
+.grip::before{border-color:var(--sub)}
+header .menu{background:var(--card2);border-color:var(--line)}
+.shade{background:oklch(0.1 0.02 50 / .55)!important}
+/* 一覧を開くと、退いた本体の四隅をスマホの画面と同じ角丸に見せる（2026-10-21 かしぇ）。
+   頭と本文は別の要素なので、本体の四隅に一覧の地の色の扇形を重ねて丸く見せる。本体と一緒に動く */
+.frame{display:none}
+@media (max-width:760px){
+ .frame{display:block;position:fixed;inset:0;z-index:4;pointer-events:none;opacity:0;transform:translateX(var(--x,0px));
+ transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .2s;border-radius:34px;
+ /* 角丸の外側を一覧の地の色の輪で覆い、内側の左の縁に影を入れて本体を一段手前に見せる。
+    同じ色の扇形を四隅に置くだけだと、同じ色の頭の帯の上で角丸が見えなかった */
+ box-shadow:0 0 0 30px var(--paper2),inset 14px 0 22px -14px oklch(0.06 0.02 50 / .9),inset 0 0 0 1px oklch(1 0 0 / .08)}
+ body.open .frame,body.dragging .frame{opacity:1}
+ body.dragging .frame{transition:none}
+}
+@media (max-width:760px){.topic{padding:24px 16px 18px}.topic h2{font-size:1.05rem;font-weight:600;line-height:1.55}}
 """
 
 
@@ -351,6 +452,18 @@ document.querySelector('header .menu').addEventListener('click',function(){setOp
 document.querySelector('.shade').addEventListener('click',function(e){if(e.detail>0&&e.timeStamp-endAt<250)return;setOpen(false)});
 s.querySelectorAll('aside a').forEach(function(a){a.addEventListener('click',function(){
 if(m.matches&&b.classList.contains('open')){pushed=false;b.classList.remove('open');mb.setAttribute('aria-expanded','false')}})});
+// 一覧の調査を選ぶ・ホームへ戻るを View Transitions でつなぐ。選んだ題名と紙面の見出しに同じ名前を付け替えて、
+// 古い画面の題名から新しい画面の見出しへ移す（同じ名前が2つあると動かないので、更新の中で付け替える）
+var VT=!!document.startViewTransition&&!matchMedia('(prefers-reduced-motion:reduce)').matches;
+if(VT)document.documentElement.classList.add('vt');
+function vt(from,toSel,hash){var go=function(){location.hash=hash};if(!VT){go();return}
+if(from)from.style.viewTransitionName='specimen';
+document.startViewTransition(function(){if(from)from.style.viewTransitionName='';go();
+var to=toSel&&document.querySelector(toSel);if(to&&from)to.style.viewTransitionName='specimen'}).finished.then(function(){
+var to=toSel&&document.querySelector(toSel);if(to)to.style.viewTransitionName=''})}
+s.querySelectorAll('aside a').forEach(function(a){a.addEventListener('click',function(e){if(e.defaultPrevented||!VT)return;e.preventDefault();
+var id=a.getAttribute('href');var q=m.matches?null:a.querySelector('.q');vt(q,id+' h2',id.slice(1))})});
+document.querySelectorAll('.topic .back').forEach(function(a){a.addEventListener('click',function(e){if(!VT)return;e.preventDefault();vt(null,null,'')})});
 var t=null,endAt=-1e9;
 function wide(el){var w=el&&el.closest&&el.closest('.tablewrap,pre');return w&&w.scrollWidth>w.clientWidth}
 function marks(){document.querySelectorAll('.tablewrap,pre').forEach(function(w){w.style.touchAction=w.scrollWidth>w.clientWidth?'auto':''})}
@@ -394,16 +507,22 @@ else{w=Math.max(200,w);last=w;b.style.setProperty('--side',w+'px');st(String(w))
 })();"""
 
 
-def bars(rows: list[tuple[str, int]], cls: str = "", head: str = "", unit: str = "") -> str:
-    """1系列の横棒。共通の目盛り（最大値を全幅）で、値は棒の横に数字でも出す。"""
+def bars(rows: list[tuple[str, int]], cls: str = "", head: str = "", unit: str = "", colors: dict | None = None) -> str:
+    """横棒。共通の目盛り（最大値を全幅）で、値は棒の横に数字でも出す。
+    colors を渡すと行ごとに標本の色（.rc1〜.rc4）で塗る＝一覧のチップと同じ色で対応させる。ラベルは必ず文字で出す"""
     if not rows:
         return '<p class="note">記録なし</p>'
     peak = max(v for _, v in rows) or 1
     body = "".join(
-        f'<tr><td class="lbl">{esc(k)}</td><td class="bar {cls}"><span style="width:{v / peak * 100:.1f}%" '
+        f'<tr><td class="lbl">{esc(k)}</td><td class="bar {cls} {("rc%d" % colors[k]) if colors and k in colors else ""}"><span style="width:{v / peak * 100:.1f}%" '
         f'title="{esc(k)}: {v}{unit}"></span></td><td class="n">{v}</td></tr>' for k, v in rows)
     return (f'<div class="tablewrap"><table><thead><tr><th>{esc(head)}</th><th></th><th class="n">{esc(unit)}</th></tr></thead>'
             f"<tbody>{body}</tbody></table></div>")
+
+
+def reason_cls(t: dict) -> str:
+    n = REASON_COLOR.get(t["reason_class"])
+    return f"rc{n}" if n else "none"
 
 
 def status_chip(status: str) -> str:
@@ -422,7 +541,7 @@ def topic_html(t: dict) -> str:
         rounds += f'<span class="note">（台帳の記載: {esc(run["周"])}）</span>'
     facts = [("日付", esc(t["date"] or "記録なし")), ("たどった周", rounds),
              ("原文", f"{t['sources']} 本" + (f'<span class="note">（台帳の記載: {esc(run["原文"])}）</span>' if run.get("原文") else "")),
-             ("調査を区切った理由", (f'<span class="chip{" none" if t["reason_class"] == "記録なし" else ""}">{esc(t["reason_class"])}</span> '
+             ("調査を区切った理由", (f'<span class="chip {reason_cls(t)}">{esc(t["reason_class"])}</span> '
                                     + esc(t["reason"])) if t["reason"] else "記録なし")]
     if run.get("感覚と合った？"):
         facts.append(("感覚と合った？", esc(run["感覚と合った？"])))
@@ -433,7 +552,7 @@ def topic_html(t: dict) -> str:
         facts.append(("検索と取得", line))
     else:
         facts.append(("検索と取得", '記録なし<span class="note">（検索の記録を残す前の調査）</span>'))
-    out = [f'<section class="topic" id="t-{esc(t["slug"])}">',
+    out = [f'<section class="topic {reason_cls(t)}" id="t-{esc(t["slug"])}">',
            '<a class="back" href="#">← ホームへ</a>',
            f"<h2>{esc(title_of(t))}</h2>",
            f'<p class="note">{esc(t["slug"])}</p>',
@@ -460,11 +579,11 @@ def home_html(topics: list[dict]) -> str:
     fetch_topics = [t for t in topics if t["fetch_ok"] is not None]
     by_date = [t for t in topics if t["rounds"] is not None]
     rules = "".join(f"<li>{esc(label)}: {esc('・'.join(words))}</li>" for label, words in REASON_RULES)
-    out = ['<section class="home">', "<h2>調べものの記録</h2>",
+    out = ['<section class="home">',
            f'<p class="note">一覧から調査を選ぶと詳細が開く。数字はすべて各調査のフォルダの記録から機械で数えた。</p>',
            '<div class="card"><h3>調査を区切った理由</h3>',
            f'<p class="note">自動分類。{n}件中 {len(with_reason)}件に記録がある。元の文は各調査の詳細にある。</p>',
-           bars(reasons, head="分類", unit="件"),
+           bars(reasons, head="分類", unit="件", colors=REASON_COLOR),
            f"<details><summary>分類の規則（記録の文にこの語があれば、上から順に当てはめる）</summary><ul>{rules}</ul></details></div>",
            '<div class="card"><h3>原文を取得した媒体</h3>',
            f'<p class="note">map.md の原文の表の URL から数えた。{n}件中 {with_hosts}件に記録がある。上位{SHOWN_HOSTS}件。</p>',
@@ -487,25 +606,24 @@ def home_html(topics: list[dict]) -> str:
 
 def render(topics: list[dict], root: Path) -> str:
     try:
-        logo = LOGO.read_text(encoding="utf-8")
+        logo = (LOGO_LIGHT if LOGO_LIGHT.is_file() else LOGO).read_text(encoding="utf-8")
         logo = logo.replace("<svg ", '<svg role="img" aria-label="imozuru" ', 1)
     except OSError:
         logo = '<span class="ttl">imozuru</span>'  # 公開版の外で動かしたときなど、ロゴが無ければ文字で出す
     total_sources = sum(t["sources"] for t in topics)
     items = "".join(
-        f'<li><a href="#t-{esc(t["slug"])}"><span class="q">{esc(title_of(t))}</span>'
-        f'<span class="m">{esc(t["date"] or "日付なし")}<span class="chip{" none" if t["reason_class"] == "記録なし" else ""}">'
+        f'<li><a class="{reason_cls(t)}" href="#t-{esc(t["slug"])}"><span class="q">{esc(title_of(t))}</span>'
+        f'<span class="m">{esc(t["date"] or "日付なし")}<span class="chip {reason_cls(t)}">'
         f'{esc(t["reason_class"])}</span></span></a></li>' for t in topics)
     # 選んでいる調査を一覧で示す。スクリプトを使わず、:target を :has() で一覧へ伝える
     current = "".join(f'.layout:has(#t-{t["slug"]}:target) aside a[href="#t-{t["slug"]}"]'
-                      "{background:var(--card);border-left-color:var(--src)}" for t in topics)
+                      "{background:oklch(1 0 0 / .09)}" for t in topics)
     body = [f'<header><button class="menu" type="button" aria-controls="side" aria-expanded="false" aria-label="調査の一覧"><span></span></button>{logo}'
-            f'<span class="ttl">調べものの記録</span>'
             f'<span class="sum">調査 {len(topics)} 件・原文 {total_sources} 本</span></header>',
             '<div class="layout">',
             f'<div class="side" id="side"><aside><h2>調査（新しい順）</h2><ol>{items}</ol></aside>'
             '<button class="grip" type="button" aria-label="調査の一覧を開く・閉じる（ドラッグでも動く）"></button></div>',
-            '<button class="shade" type="button" aria-label="一覧を閉じる" tabindex="-1"></button>',
+            '<button class="shade" type="button" aria-label="一覧を閉じる" tabindex="-1"></button><div class="frame" aria-hidden="true"></div>',
             "<main>", home_html(topics), *[topic_html(t) for t in topics],
             '<footer>imozuru の dashboard.py が生成。文書へのリンクは、このページと同じ場所にある調査のフォルダを指す。</footer>',
             "</main></div>"]
@@ -515,8 +633,8 @@ def render(topics: list[dict], root: Path) -> str:
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; script-src 'sha256-{script_hash}'">
 <title>imozuru 調べものの記録</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500&family=Noto+Serif+JP:wght@400;600&family=Shippori+Mincho:wght@500&display=swap">
-<style>{CSS}{current}</style></head>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500&family=Noto+Serif+JP:wght@400;600&family={THEME["font"]}&display=swap">
+<style>{CSS}:root{{--bar:{THEME["bar"]};--src:{THEME["src"]};--r1:{THEME["r1"]};--r2:{THEME["r2"]};--r3:{THEME["r3"]};--r4:{THEME["r4"]};--head:{THEME["head"]},"Hiragino Mincho ProN","Yu Mincho",serif}}{current}</style></head>
 <body>
 {chr(10).join(body)}
 <script>{SIDE_JS}</script>
