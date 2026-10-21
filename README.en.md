@@ -112,6 +112,10 @@ log.md         per round: what was searched, what turned up, decisions and why
 sources/       saved sources
 extracts.json  extracts
 report.html    extract page
+queries.jsonl  every hit for every search query
+fetch-log.jsonl fetch record (URL and OK/FAIL)
+digest.json    explanation for the detailed report
+digest.html    detailed report (beginner and adjacent-field explanations, plus the full search record)
 ```
 
 A sample extract page is in `examples/demo/`, and this command tries the script on its own.
@@ -125,7 +129,8 @@ python3 skills/imozuru/scripts/report.py examples/demo
 ### Why it does not summarise
 
 Kuhlthau (1991) describes how summarising in detail during the confused early stage of a search invites premature closure and gets in the way of the search process.
-So imozuru stops at pointing to where things are in the sources.
+So while it is searching, imozuru stops at pointing to where things are in the sources.
+Explanation is written only after the stop decision, in the detailed report.
 
 ### When to stop
 
@@ -157,6 +162,14 @@ imozuru follows those the same way it follows papers, so each saved source gets 
 Dozens of saved sources leave the user with no idea where to start.
 So, following extracting from Ellis's model, the skill builds a page that cuts the relevant passage from a source for each claim.
 `report.py` checks that each extract appears verbatim at the given lines of its source, and if even one word differs, it does not build the page.
+
+### The two layers of the detailed report
+
+Extracts alone do not tell a newcomer what the terms mean or what to read first.
+So after stopping, the skill builds a detailed report with two layers: explanation and record.
+The explanation comes in two levels, one for readers with no background and one for readers who know a neighbouring field, and every sentence carries a verbatim quote from a source as its evidence.
+`digest.py` checks those quotes the same way as the extracts, and refuses to build the page if any sentence lacks one.
+The record is assembled by machine from every hit of every query and from the fetch results, so it shows everything that was searched and found, including queries that found nothing.
 
 ## Where the rules come from
 

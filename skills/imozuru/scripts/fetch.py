@@ -17,7 +17,10 @@
 """
 
 import codecs
+import contextlib
+import io
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -859,8 +862,41 @@ def main() -> int:
     sources.mkdir(parents=True, exist_ok=True)
     # 変換や FAIL の後始末は一時置き場だけで行う。同名の原文を検査前に上書きしない。
     # 保存先の中に作るので、成功時の replace はファイルシステムをまたがない。
-    with tempfile.TemporaryDirectory(prefix=".imozuru-fetch-", dir=sources) as tmp:
-        return fetch_source(Path(tmp), name, url, sources)
+    # 結果の行は画面に出すのと同じものを取得の記録にも残す。詳細レポート（digest.py）が
+    # 検索で挙がった URL と突き合わせて〔保存〕〔取得失敗〕を付ける。URL は OK の行に出ないので、ここで書く
+    buf = io.StringIO()
+    try:
+        with tempfile.TemporaryDirectory(prefix=".imozuru-fetch-", dir=sources) as tmp, \
+                contextlib.redirect_stdout(buf):
+            code = fetch_source(Path(tmp), name, url, sources)
+    finally:
+        sys.stdout.write(buf.getvalue())
+    record_fetch(sources, name, url, buf.getvalue())
+    return code
+
+
+def record_fetch(sources: Path, name: str, url: str, printed: str) -> None:
+    """最後の OK/FAIL の行を、調べものの置き場の fetch-log.jsonl に1行足す。書けなくても取得の結果は変えない。
+
+    置き場は sources/ の親。sources/ には原文だけを置く決まりなので、記録は外に出す。
+    保存先が sources という名前でないとき（手で別の場所を指したとき）は、親が何か分からないので書かない。
+    """
+    if sources.name != "sources":
+        return
+    lines = [l for l in printed.splitlines() if l.startswith(("OK\t", "FAIL\t"))]
+    if not lines:
+        return
+    parts = lines[-1].split("\t")
+    entry = {"url": url, "name": name, "status": parts[0]}
+    if parts[0] == "OK" and len(parts) > 2:
+        entry["file"] = Path(parts[2]).name
+    elif len(parts) > 2:
+        entry["reason"] = parts[2]
+    try:
+        with (sources.parent / "fetch-log.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
