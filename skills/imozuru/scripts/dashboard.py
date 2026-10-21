@@ -232,7 +232,14 @@ header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:16px max(
 header svg{height:40px;width:auto;flex:none}
 header .ttl{font-family:var(--head);font-weight:500;letter-spacing:.04em;font-size:1.15rem}
 header .sum{color:var(--sub);font-size:.85rem;margin-left:auto}
-header .menu{display:none;font:inherit;font-size:.85rem;border:1px solid var(--ink);background:var(--card);color:var(--ink);border-radius:6px;padding:4px 12px;cursor:pointer}
+header .menu{display:none;position:relative;width:40px;height:40px;flex:none;border:1px solid var(--line);background:var(--card);border-radius:8px;padding:0;cursor:pointer}
+/* 2本線が開くと X に変わる（design-library の menu-cross-morph・makery: translateY＋rotate、0.2s ease-out） */
+header .menu span,header .menu span::before{position:absolute;left:11px;width:18px;height:2px;border-radius:1px;background:var(--ink)}
+header .menu span{top:15px;transition:transform .2s ease-out}
+header .menu span::before{content:"";left:0;top:8px;transition:transform .2s ease-out}
+body.open header .menu span{transform:translateY(4px) rotate(45deg)}
+body.open header .menu span::before{transform:translateY(-8px) rotate(-90deg)}
+header .menu:focus-visible{outline:2px solid var(--src);outline-offset:2px}
 .layout{display:grid;grid-template-columns:var(--side,18rem) minmax(0,1fr);min-height:calc(100vh - 72px)}
 .layout>*{min-width:0}
 .side{position:sticky;top:0;align-self:start;height:100vh;background:var(--paper2);border-right:1px solid var(--line)}
@@ -303,7 +310,9 @@ footer{color:var(--sub);font-size:.78rem;margin-top:48px;border-top:1px solid va
  .grip{display:none}
  .shade{display:block;position:fixed;inset:0;z-index:2;background:rgba(72,36,4,.25);transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .25s;opacity:0;pointer-events:none;border:0;padding:0}
  body.open .shade,body.dragging .shade{opacity:1;pointer-events:auto}
+ body.open header{z-index:3}
  header .menu{display:inline-block}
+ @media (prefers-reduced-motion:reduce){header .menu span,header .menu span::before{transition:none}}
  header{gap:10px 12px;padding-top:10px;padding-bottom:10px}
  header svg{height:30px}
  header .ttl{display:none}
@@ -330,13 +339,14 @@ m=matchMedia('(max-width:760px)'),K='imozuru-side',LOCK=15,RATIO=1.5,EDGE=24,FLI
 function st(v){try{localStorage.setItem(K,v)}catch(e){}}
 try{var v=localStorage.getItem(K);if(v==='0')b.classList.add('collapsed');else if(v){last=+v;b.style.setProperty('--side',v+'px')}}catch(e){}
 function W(){return s.getBoundingClientRect().width}
-function setOpen(o,fromPop){if(o===b.classList.contains('open'))return;b.classList.toggle('open',o);
+var mb=document.querySelector('header .menu');
+function setOpen(o,fromPop){if(o===b.classList.contains('open'))return;b.classList.toggle('open',o);mb.setAttribute('aria-expanded',String(o));
 if(o){history.pushState({imozuruPane:1},'');pushed=true}else if(pushed&&!fromPop){pushed=false;history.back()}else pushed=false}
 addEventListener('popstate',function(){if(b.classList.contains('open'))setOpen(false,true)});
 document.querySelector('header .menu').addEventListener('click',function(){setOpen(!b.classList.contains('open'))});
 document.querySelector('.shade').addEventListener('click',function(){setOpen(false)});
 s.querySelectorAll('aside a').forEach(function(a){a.addEventListener('click',function(){
-if(m.matches&&b.classList.contains('open')){pushed=false;b.classList.remove('open')}})});
+if(m.matches&&b.classList.contains('open')){pushed=false;b.classList.remove('open');mb.setAttribute('aria-expanded','false')}})});
 var t=null;
 document.addEventListener('pointerdown',function(e){if(!m.matches||e.button>0)return;
 if(e.target.closest&&e.target.closest('a,button:not(.shade),summary,input'))return;
@@ -472,7 +482,7 @@ def render(topics: list[dict], root: Path) -> str:
     # 選んでいる調査を一覧で示す。スクリプトを使わず、:target を :has() で一覧へ伝える
     current = "".join(f'.layout:has(#t-{t["slug"]}:target) aside a[href="#t-{t["slug"]}"]'
                       "{background:var(--card);border-left-color:var(--src)}" for t in topics)
-    body = [f'<header><button class="menu" type="button" aria-controls="side">調査の一覧</button>{logo}'
+    body = [f'<header><button class="menu" type="button" aria-controls="side" aria-expanded="false" aria-label="調査の一覧"><span></span></button>{logo}'
             f'<span class="ttl">調べものの記録</span>'
             f'<span class="sum">調査 {len(topics)} 件・原文 {total_sources} 本</span></header>',
             '<div class="layout">',
