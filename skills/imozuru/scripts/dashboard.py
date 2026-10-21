@@ -301,8 +301,12 @@ footer{color:var(--sub);font-size:.78rem;margin-top:48px;border-top:1px solid va
   /* Discord 型（takubase の OverlappingPanes に合わせた）。一覧は下に敷き、頭と本文が右へ退いて見せる */
  .side{position:fixed;top:0;left:0;height:100vh;height:100dvh;width:84vw;z-index:0;border-right:none}
  header,main{position:relative;z-index:1;transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1)}
- main{background:var(--paper);min-height:100dvh;touch-action:pan-y}
- header{touch-action:pan-y}
+ main{background:var(--paper);min-height:100dvh}
+ /* 縦にスクロールする要素には、その要素自身に pan-y を宣言する。ブラウザは触れた所から最寄りの
+    スクロールする祖先までしか touch-action を見ず、無いと横の操作をブラウザが取って中断する（takubase の規約） */
+ html,body,header,main,aside,.tablewrap,pre{touch-action:pan-y}
+ /* 表の箱は、はみ出していなくても横にスクロールする箱として扱われ、横の操作をブラウザが取った（20px で中断）。
+    本当にはみ出す表だけスクリプトが横スクロールを戻し、そこから始めた操作は表に譲る */
  body.dragging header,body.dragging main,body.dragging .shade{transition:none}
  body.open{--x:84vw;overflow:hidden}
  body.collapsed .layout,.layout{grid-template-columns:minmax(0,1fr)}
@@ -344,27 +348,40 @@ function setOpen(o,fromPop){if(o===b.classList.contains('open'))return;b.classLi
 if(o){history.pushState({imozuruPane:1},'');pushed=true}else if(pushed&&!fromPop){pushed=false;history.back()}else pushed=false}
 addEventListener('popstate',function(){if(b.classList.contains('open'))setOpen(false,true)});
 document.querySelector('header .menu').addEventListener('click',function(){setOpen(!b.classList.contains('open'))});
-document.querySelector('.shade').addEventListener('click',function(){setOpen(false)});
+document.querySelector('.shade').addEventListener('click',function(e){if(e.detail>0&&e.timeStamp-endAt<250)return;setOpen(false)});
 s.querySelectorAll('aside a').forEach(function(a){a.addEventListener('click',function(){
 if(m.matches&&b.classList.contains('open')){pushed=false;b.classList.remove('open');mb.setAttribute('aria-expanded','false')}})});
-var t=null;
+var t=null,endAt=-1e9;
+function wide(el){var w=el&&el.closest&&el.closest('.tablewrap,pre');return w&&w.scrollWidth>w.clientWidth}
+function marks(){document.querySelectorAll('.tablewrap,pre').forEach(function(w){w.style.touchAction=w.scrollWidth>w.clientWidth?'auto':''})}
+marks();addEventListener('resize',marks);addEventListener('hashchange',marks);document.addEventListener('toggle',marks,true);
 document.addEventListener('pointerdown',function(e){if(!m.matches||e.button>0)return;
-if(e.target.closest&&e.target.closest('a,button:not(.shade),summary,input'))return;
+// リンクの上から始めた操作も受ける（開いた一覧の項目の上から閉じられるように）。ドラッグの直後のクリックは下で止める
+if(e.target.closest&&e.target.closest('header .menu,summary,input'))return;
+// 横にスクロールできる表の上で始めた操作は、表のスクロールに譲る
+if(wide(e.target))return;
 var open=b.classList.contains('open');if(!open&&(e.clientX<EDGE||e.clientX>innerWidth-EDGE))return;
-t={x:e.clientX,y:e.clientY,t:e.timeStamp,axis:'p',v:null,lx:e.clientX,lt:e.timeStamp,from:open?W():0};
-// マウスで試すと押した所から文字が選ばれていく。指の操作は選択にならないので、マウスのときだけ止める
+var f=open?W():0;t={id:e.pointerId,x:e.clientX,y:e.clientY,axis:'p',v:null,lx:e.clientX,lt:e.timeStamp,from:f,cur:f};
 if(e.pointerType==='mouse')e.preventDefault()});
-addEventListener('pointermove',function(e){if(!t)return;var dx=e.clientX-t.x,dy=e.clientY-t.y;
+addEventListener('pointermove',function(e){if(!t||e.pointerId!==t.id)return;var dx=e.clientX-t.x,dy=e.clientY-t.y;
 if(t.axis==='p'){if(Math.hypot(dx,dy)<LOCK)return;var ax=Math.abs(dx),ay=Math.abs(dy);
-t.axis=ay>=RATIO*ax?'y':(ax>ay?'x':'p');if(t.axis==='y'){t=null;return}if(t.axis!=='x')return;b.classList.add('dragging');t.kx=e.clientX;t.kt=e.timeStamp}
+t.axis=ay>=RATIO*ax?'y':(ax>ay?'x':'p');if(t.axis==='y'){t=null;return}if(t.axis!=='x')return;
+// 横に決まったら指の追跡をページが握る（指が要素の外へ出ても動きを拾い続ける）
+try{b.setPointerCapture(t.id)}catch(x){}b.classList.add('dragging');t.kx=e.clientX;t.kt=e.timeStamp}
 var dt=e.timeStamp-t.lt;if(dt>0){var inst=(e.clientX-t.lx)/dt;t.v=t.v===null?inst:0.5*inst+0.5*t.v}t.lx=e.clientX;t.lt=e.timeStamp;
-var x=Math.min(W(),Math.max(0,t.from+dx));b.style.setProperty('--x',x+'px');e.preventDefault()},{passive:false});
-function end(e){if(!t)return;var g0=t;t=null;if(g0.axis!=='x')return;b.classList.remove('dragging');b.style.removeProperty('--x');
-var dx=e.clientX-g0.x,v=g0.v,wasOpen=g0.from>0,open;
-// 移動の合間の時刻が同じで速さを測れなかったときは、軸が決まってから放すまでの平均で代える
-if(v===null)v=(e.clientX-g0.kx)/Math.max(1,e.timeStamp-g0.kt);
-if(Math.abs(v)>=FLICK)open=v>0;else open=wasOpen?dx>-COMMIT:dx>=COMMIT;setOpen(open)}
-addEventListener('pointerup',end);addEventListener('pointercancel',function(){if(t&&t.axis==='x'){b.classList.remove('dragging');b.style.removeProperty('--x')}t=null});
+t.cur=Math.min(W(),Math.max(0,t.from+dx));b.style.setProperty('--x',t.cur+'px')});
+// iOS では指のドラッグが「放した」ではなく「中断」や「握りを失った」で終わることが多い。
+// 軸が横に決まった後なら、終わり方によらず最後の位置と速さで開閉を決める（中断を「元に戻す」と読むと、放した瞬間に戻る）
+function end(e){if(!t||e.pointerId!==t.id)return;var g0=t;t=null;if(g0.axis!=='x')return;
+b.classList.remove('dragging');b.style.removeProperty('--x');endAt=e.timeStamp;
+var moved=g0.cur-g0.from,v=g0.v,open;
+if(v===null)v=(g0.lx-g0.kx)/Math.max(1,g0.lt-g0.kt);
+if(Math.abs(v)>=FLICK)open=v>0;else open=g0.from>0?moved>-COMMIT:moved>=COMMIT;setOpen(open)}
+addEventListener('pointerup',end);addEventListener('pointercancel',end);
+// 横にドラッグした直後のクリック（指を放した所のリンクや暗い面）は、押したことにしない
+document.addEventListener('click',function(e){if(e.detail>0&&e.timeStamp-endAt<250){e.preventDefault();e.stopPropagation()}},true);
+// 握りを失った合図は、ページが握っていたときだけ終了と読む。子の要素から出た合図で終えると、握った直後に自分で止まる
+b.addEventListener('lostpointercapture',function(e){if(e.target===b)end(e)});
 var d=null;
 g.addEventListener('pointerdown',function(e){if(m.matches)return;d={x:e.clientX,mv:false,w:b.classList.contains('collapsed')?0:W()};e.preventDefault()});
 addEventListener('pointermove',function(e){if(!d)return;var dx=e.clientX-d.x;if(Math.abs(dx)>4&&!d.mv){d.mv=true;b.classList.add('dragging')}if(!d.mv)return;
