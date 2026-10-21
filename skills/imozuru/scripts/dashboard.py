@@ -291,13 +291,18 @@ summary{cursor:pointer;color:var(--sub)}
 footer{color:var(--sub);font-size:.78rem;margin-top:48px;border-top:1px solid var(--line);padding-top:12px}
 @media (max-width:760px){
  .layout{grid-template-columns:minmax(0,1fr)}
- .side{position:fixed;top:0;left:0;height:100dvh;width:min(86vw,20rem);z-index:20;transform:translateX(-100%);transition:transform .2s;box-shadow:none}
- body.open .side{transform:translateX(0);box-shadow:0 0 24px rgba(72,36,4,.25)}
- body.dragging .side{transition:none}
+  /* Discord 型（takubase の OverlappingPanes に合わせた）。一覧は下に敷き、頭と本文が右へ退いて見せる */
+ .side{position:fixed;top:0;left:0;height:100vh;height:100dvh;width:84vw;z-index:0;border-right:none}
+ header,main{position:relative;z-index:1;transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1)}
+ main{background:var(--paper);min-height:100dvh;touch-action:pan-y}
+ header{touch-action:pan-y}
+ body.dragging header,body.dragging main,body.dragging .shade{transition:none}
+ body.open{--x:84vw;overflow:hidden}
  body.collapsed .layout,.layout{grid-template-columns:minmax(0,1fr)}
  body.collapsed aside{visibility:visible}
- .grip{right:-22px;width:22px;height:88px}
- body.open .shade{display:block;position:fixed;inset:0;background:rgba(72,36,4,.25);z-index:15}
+ .grip{display:none}
+ .shade{display:block;position:fixed;inset:0;z-index:2;background:rgba(72,36,4,.25);transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .25s;opacity:0;pointer-events:none;border:0;padding:0}
+ body.open .shade,body.dragging .shade{opacity:1;pointer-events:auto}
  header .menu{display:inline-block}
  header{gap:10px 12px;padding-top:10px;padding-bottom:10px}
  header svg{height:30px}
@@ -308,33 +313,57 @@ footer{color:var(--sub);font-size:.78rem;margin-top:48px;border-top:1px solid va
  dl.facts{grid-template-columns:minmax(0,6.5rem) minmax(0,1fr);gap:6px 10px}
  main h2{font-size:1.15rem}
 }
-@media (prefers-reduced-motion:reduce){.side{transition:none!important}}
+@media (prefers-reduced-motion:reduce){header,main,.shade{transition:none!important}}
 """
 
 
-# 一覧の開閉。つまみをドラッグして広げる・畳む。押すだけでも開閉する。
-# 広い画面は一覧の幅を変え（120px より狭く放せば畳む）、狭い画面は左から引き出す。
-# 引き出しを動かすとつまみも一緒に動き、つまみの上で放したことにならない。移動と放しはページ全体で受け取る。
+# 一覧の開閉。広い画面は一覧の右端のつまみをドラッグして幅を変える・畳む（押すだけでも開閉）。
+# 狭い画面は takubase の OverlappingPanes（Discord 型）に合わせ、本文のどこでも横にスワイプして開閉する:
+#  - 指が 15px 動くまでは何もせず、縦の動きが横の 1.5 倍以上なら縦スクロールに任せる（軸のロック）
+#  - 画面の左右 24px から始めた操作は受けない（iOS の「戻る」スワイプに譲る）
+#  - 0.3px/ms 以上で払えば向きで決め、ゆっくりなら動き始めから 72px で開閉を切り替える
+#    （「半分以上」で決めると 84% 幅の一覧は大きく動かさないと開かない。takubase で実際に戻りが起きた）
+#  - 開くと履歴を1つ積み、端末の戻るで閉じる。開いている間は本文に暗い面をかけ、押すと閉じる
 # 幅と開閉は localStorage に覚える。スクリプトが動かなくても一覧は CSS だけで出ている
 SIDE_JS = """(function(){var b=document.body,s=document.getElementById('side'),g=s.querySelector('.grip'),
-m=matchMedia('(max-width:760px)'),K='imozuru-side',x0=null,w0=0,mv=false,last=288;
+m=matchMedia('(max-width:760px)'),K='imozuru-side',LOCK=15,RATIO=1.5,EDGE=24,FLICK=0.3,COMMIT=72,last=288,pushed=false;
 function st(v){try{localStorage.setItem(K,v)}catch(e){}}
 try{var v=localStorage.getItem(K);if(v==='0')b.classList.add('collapsed');else if(v){last=+v;b.style.setProperty('--side',v+'px')}}catch(e){}
-function toggle(){if(m.matches){b.classList.toggle('open')}else if(b.classList.toggle('collapsed')){st('0')}else{b.style.setProperty('--side',last+'px');st(String(last))}}
-g.addEventListener('pointerdown',function(e){x0=e.clientX;mv=false;var W=s.getBoundingClientRect().width;
-w0=m.matches?(b.classList.contains('open')?0:-W):(b.classList.contains('collapsed')?0:W);e.preventDefault()});
-addEventListener('pointermove',function(e){if(x0===null)return;var d=e.clientX-x0;if(Math.abs(d)>4&&!mv){mv=true;b.classList.add('dragging')}if(!mv)return;
-if(m.matches){var W=s.getBoundingClientRect().width;s.style.transform='translateX('+Math.min(0,Math.max(-W,w0+d))+'px)'}
-else{b.classList.remove('collapsed');b.style.setProperty('--side',Math.min(520,Math.max(0,w0+d))+'px')}});
-function up(e){if(x0===null)return;var d=e.clientX-x0;x0=null;b.classList.remove('dragging');
-if(!mv){toggle();return}
-if(m.matches){var W=s.getBoundingClientRect().width;s.style.transform='';b.classList.toggle('open',w0+d>-W/2)}
-else{var w=Math.min(520,w0+d);if(w<120){b.classList.add('collapsed');b.style.removeProperty('--side');st('0')}
-else{w=Math.max(200,w);last=w;b.style.setProperty('--side',w+'px');st(String(w))}}}
-addEventListener('pointerup',up);addEventListener('pointercancel',up);
-document.querySelector('header .menu').addEventListener('click',function(){b.classList.toggle('open')});
-document.querySelector('.shade').addEventListener('click',function(){b.classList.remove('open')});
-s.querySelectorAll('aside a').forEach(function(a){a.addEventListener('click',function(){b.classList.remove('open')})});
+function W(){return s.getBoundingClientRect().width}
+function setOpen(o,fromPop){if(o===b.classList.contains('open'))return;b.classList.toggle('open',o);
+if(o){history.pushState({imozuruPane:1},'');pushed=true}else if(pushed&&!fromPop){pushed=false;history.back()}else pushed=false}
+addEventListener('popstate',function(){if(b.classList.contains('open'))setOpen(false,true)});
+document.querySelector('header .menu').addEventListener('click',function(){setOpen(!b.classList.contains('open'))});
+document.querySelector('.shade').addEventListener('click',function(){setOpen(false)});
+s.querySelectorAll('aside a').forEach(function(a){a.addEventListener('click',function(){
+if(m.matches&&b.classList.contains('open')){pushed=false;b.classList.remove('open')}})});
+var t=null;
+document.addEventListener('pointerdown',function(e){if(!m.matches||e.button>0)return;
+if(e.target.closest&&e.target.closest('a,button:not(.shade),summary,input'))return;
+var open=b.classList.contains('open');if(!open&&(e.clientX<EDGE||e.clientX>innerWidth-EDGE))return;
+t={x:e.clientX,y:e.clientY,t:e.timeStamp,axis:'p',v:null,lx:e.clientX,lt:e.timeStamp,from:open?W():0};
+// マウスで試すと押した所から文字が選ばれていく。指の操作は選択にならないので、マウスのときだけ止める
+if(e.pointerType==='mouse')e.preventDefault()});
+addEventListener('pointermove',function(e){if(!t)return;var dx=e.clientX-t.x,dy=e.clientY-t.y;
+if(t.axis==='p'){if(Math.hypot(dx,dy)<LOCK)return;var ax=Math.abs(dx),ay=Math.abs(dy);
+t.axis=ay>=RATIO*ax?'y':(ax>ay?'x':'p');if(t.axis==='y'){t=null;return}if(t.axis!=='x')return;b.classList.add('dragging');t.kx=e.clientX;t.kt=e.timeStamp}
+var dt=e.timeStamp-t.lt;if(dt>0){var inst=(e.clientX-t.lx)/dt;t.v=t.v===null?inst:0.5*inst+0.5*t.v}t.lx=e.clientX;t.lt=e.timeStamp;
+var x=Math.min(W(),Math.max(0,t.from+dx));b.style.setProperty('--x',x+'px');e.preventDefault()},{passive:false});
+function end(e){if(!t)return;var g0=t;t=null;if(g0.axis!=='x')return;b.classList.remove('dragging');b.style.removeProperty('--x');
+var dx=e.clientX-g0.x,v=g0.v,wasOpen=g0.from>0,open;
+// 移動の合間の時刻が同じで速さを測れなかったときは、軸が決まってから放すまでの平均で代える
+if(v===null)v=(e.clientX-g0.kx)/Math.max(1,e.timeStamp-g0.kt);
+if(Math.abs(v)>=FLICK)open=v>0;else open=wasOpen?dx>-COMMIT:dx>=COMMIT;setOpen(open)}
+addEventListener('pointerup',end);addEventListener('pointercancel',function(){if(t&&t.axis==='x'){b.classList.remove('dragging');b.style.removeProperty('--x')}t=null});
+var d=null;
+g.addEventListener('pointerdown',function(e){if(m.matches)return;d={x:e.clientX,mv:false,w:b.classList.contains('collapsed')?0:W()};e.preventDefault()});
+addEventListener('pointermove',function(e){if(!d)return;var dx=e.clientX-d.x;if(Math.abs(dx)>4&&!d.mv){d.mv=true;b.classList.add('dragging')}if(!d.mv)return;
+b.classList.remove('collapsed');b.style.setProperty('--side',Math.min(520,Math.max(0,d.w+dx))+'px')});
+addEventListener('pointerup',function(e){if(!d)return;var g1=d,dx=e.clientX-g1.x,w=Math.min(520,g1.w+dx);d=null;b.classList.remove('dragging');
+if(!g1.mv){if(b.classList.toggle('collapsed'))st('0');else{b.style.setProperty('--side',last+'px');st(String(last))}return}
+var close=g1.w===0?dx<COMMIT:(w<120||(dx<=-COMMIT&&w<200));
+if(close){b.classList.add('collapsed');b.style.removeProperty('--side');st('0')}
+else{w=Math.max(200,w);last=w;b.style.setProperty('--side',w+'px');st(String(w))}});
 })();"""
 
 
@@ -449,7 +478,7 @@ def render(topics: list[dict], root: Path) -> str:
             '<div class="layout">',
             f'<div class="side" id="side"><aside><h2>調査（新しい順）</h2><ol>{items}</ol></aside>'
             '<button class="grip" type="button" aria-label="調査の一覧を開く・閉じる（ドラッグでも動く）"></button></div>',
-            '<div class="shade"></div>',
+            '<button class="shade" type="button" aria-label="一覧を閉じる" tabindex="-1"></button>',
             "<main>", home_html(topics), *[topic_html(t) for t in topics],
             '<footer>imozuru の dashboard.py が生成。文書へのリンクは、このページと同じ場所にある調査のフォルダを指す。</footer>',
             "</main></div>"]
