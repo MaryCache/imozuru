@@ -1,11 +1,11 @@
 {
   "title": "影を2色で塗る順番（手本）",
   "question": "影を2色で塗るとき、暗い色と明るい色のどちらを先に置くとよいか",
-  "stopped": "要る主張の全部に原文の場所が付いた（手本なので原文は2本だけ）",
+  "stopped": "調査の論点の全部に原文の場所が付いた（手本なので原文は2本だけ）",
   "claims": [
     {
       "claim": "暗い色を先に置くと境目が濁りにくい",
-      "status": "付いた",
+      "status": "根拠あり",
       "note": "個人の記録と論文の両方にある。",
       "quotes": [
         {"file": "sample-blog.md", "line": 5, "end": 6, "text": "わたしは影を塗るとき、まず一番暗い色を先に置く。 明るい影から置くと、あとで暗い影を重ねたときに境目が濁るからだ。", "mark": "〔本人〕"},
@@ -14,7 +14,7 @@
     },
     {
       "claim": "その差が消える条件",
-      "status": "一部だけ",
+      "status": "一部のみ",
       "note": "論文の1文だけ。どれくらいのぼかしで消えるかは書かれていない。",
       "quotes": [
         {"file": "sample-paper.txt", "line": 9, "text": "The effect disappeared when layers were blended with a soft brush.", "ja": "レイヤーを柔らかいブラシでなじませると、この差は消えた。", "mark": "〔論文〕"}

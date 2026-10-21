@@ -46,7 +46,7 @@ class DigestTests(unittest.TestCase):
         self.topic = Path(tmp.name) / "sunset"
         (self.topic / "sources").mkdir(parents=True)
         (self.topic / "sources" / "paper.txt").write_text(SOURCE, encoding="utf-8")
-        self.data = {"title": "夕焼け", "question": "なぜ赤いか", "stopped": "主張に原文が付いた",
+        self.data = {"title": "夕焼け", "question": "なぜ赤いか", "stopped": "論点に原文が付いた",
                      "levels": {"lv1": level(), "lv2": level(), "lv3": level()},
                      "people_places": [sentence("散乱の論文がある。")],
                      "unresolved": ["雲の色は調べていない"]}
@@ -147,8 +147,12 @@ class DigestTests(unittest.TestCase):
     def test_claim_status_is_checked(self):
         self.data["claims"] = [{"claim": "仕組み", "status": "たぶん"}]
         self.assertEqual(self.build()[0], 1)
+        self.data["claims"] = [{"claim": "仕組み", "status": "一部のみ"}]
+        self.assertEqual(self.build()[0], 0)
+        # 2026-10-21 より前の言葉も読み替えて通す
         self.data["claims"] = [{"claim": "仕組み", "status": "一部だけ"}]
         self.assertEqual(self.build()[0], 0)
+        self.assertIn(">一部のみ<", (self.topic / "digest.html").read_text(encoding="utf-8"))
 
     def test_script_is_allowed_only_by_its_hash(self):
         import base64

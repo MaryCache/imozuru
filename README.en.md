@@ -21,29 +21,29 @@ A summary is quick to read, but the details users need for their own judgement t
 And while users don't know the field's terms they can't choose good search words, so they never get past the words they first thought of.
 
 imozuru first finds the field's terms, its central people, and the venues where knowledge collects, then follows citations, links, and authors from there to gather original sources.
-It saves them without summarising and goes only as far as pointing, for each claim the answer needs, to "which file, which lines".
+It saves them without summarising and goes only as far as pointing, for each point the answer needs, to "which file, which lines".
 Reading the sources and making the judgement is up to the user.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    A[Write the question<br>and the claims it needs] --> B[Map the field<br>terms, people, venues]
+    A[Write the question<br>and the points it needs] --> B[Map the field<br>terms, people, venues]
     B --> C[Follow<br>citations, links, authors]
     C --> D[Save the sources]
-    D --> E{Does every claim<br>have a source?}
+    D --> E{Does every point<br>have a source?}
     E -- not yet --> C
     E -- yes, or saturated --> F[Build the<br>extract page]
 ```
 
-Claude first writes down the question and the 3 to 6 claims needed to answer it.
+Claude first writes down the question and the 3 to 6 points needed to answer it.
 Next, two searchers (subagents that search the web) with different approaches collect terms, people, and venues into a map (`map.md`).
 After that, it follows references, citing works, and authors until it finds the sources.
 In fields without papers, it follows links inside articles and notes such as "I based this on so-and-so's post".
 
 Sources it finds are saved to `sources/`, and 404 pages and login walls are dropped after checking their content.
-When every claim has a source, or no new sources turn up, the search stops.
-Finally, it builds a page that lists passages cut from the sources, claim by claim (the extract page).
+When every point has a source, or no new sources turn up, the search stops.
+Finally, it builds a page that lists passages cut from the sources, point by point (the extract page).
 
 In watch mode, it collects new posts from the venues a dig turned up (Qiita and Zenn tags, note, YouTube, blogs, arXiv) via RSS and lists them.
 
@@ -107,7 +107,7 @@ Gaussian Splatting ってよく聞くけど全然わからない。論文とか�
 Results are saved to `~/research/<topic>/` in this form.
 
 ```
-map.md         question, needed claims, terms, people, venues, source table, next leads
+map.md         question, research points, terms, people, venues, source table, next leads
 log.md         per round: what was searched, what turned up, decisions and why
 sources/       saved sources
 extracts.json  extracts
@@ -135,8 +135,8 @@ Explanation is written only after the stop decision, in the detailed report.
 ### When to stop
 
 There are two conditions.
-The first is that every claim has a location in a source, following HALT by Roh and Han (2026), which decides when to stop by whether the evidence is in.
-To keep the claims from being too easy, at least one carries a condition from the request's own wording, and more than half cannot be answered without reading a source.
+The first is that every point has a location in a source, following HALT by Roh and Han (2026), which decides when to stop by whether the evidence is in.
+To keep the points from being too easy, at least one carries a condition from the request's own wording, and more than half cannot be answered without reading a source.
 
 The second is saturation: if 70% or more of the sources the two searchers list are already on the map, the search stops.
 This borrows the idea of estimating a total from the overlap between two independent searches (Kastner 2007), and the 70% is a provisional threshold set while trying the skill out.
@@ -160,7 +160,7 @@ imozuru follows those the same way it follows papers, so each saved source gets 
 ### Why extracts are checked by machine
 
 Dozens of saved sources leave the user with no idea where to start.
-So, following extracting from Ellis's model, the skill builds a page that cuts the relevant passage from a source for each claim.
+So, following extracting from Ellis's model, the skill builds a page that cuts the relevant passage from a source for each point.
 `report.py` checks that each extract appears verbatim at the given lines of its source, and if even one word differs, it does not build the page.
 
 ### The two layers of the detailed report

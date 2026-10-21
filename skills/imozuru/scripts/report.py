@@ -3,7 +3,7 @@
 
 原文を40本落としても、英語の PDF や1時間の字幕のままでは読まれずに終わる。
 かといってエージェントが要約すると「早すぎる閉じ」に戻る。間を取るのが Ellis の
-extracting＝抜き書き。主張ごとに原文をそのまま切り出して並べ、エージェントが書くのは
+extracting＝抜き書き。論点ごとに原文をそのまま切り出して並べ、エージェントが書くのは
 見出し・「見つからなかった」・英語の訳だけにする。
 
 言い換えが紛れ込まないよう、抜き書きの文が原文の指定の行にそのまま在るかを機械で確かめる。
@@ -15,7 +15,7 @@ extracting＝抜き書き。主張ごとに原文をそのまま切り出して�
 
 extracts.json の形（例はリポジトリの examples/demo/extracts.json）:
     {"title", "question", "stopped",
-     "claims": [{"claim", "status": "付いた|一部だけ|付かなかった", "note"?,
+     "claims": [{"claim", "status": "根拠あり|一部のみ|根拠なし", "note"?,
                  "quotes": [{"file", "line", "end"?, "text", "ja"?, "mark"?, "context_note"?}]}],
      "disagreements"?: [{"topic", "quotes": [{..., "who"}]}],
      "unreached"?: ["..."]}
@@ -27,6 +27,9 @@ import os
 import re
 import sys
 from pathlib import Path, PureWindowsPath
+
+# 2026-10-21 まで使っていた状態の言葉。前に書いた extracts.json も読めるよう、新しい言葉に読み替える
+OLD_STATUS = {"付いた": "根拠あり", "一部だけ": "一部のみ", "付かなかった": "根拠なし"}
 
 # 前後に見せる行数。抜き書きがどんな流れの中にあったかを、ページの中で開いて確かめられるように。
 CONTEXT_LINES = 6
@@ -173,8 +176,9 @@ def main() -> int:
             f'<p class="lead">調査を区切った理由: {esc(data["stopped"])}</p>',
             '<p class="note">ここに並ぶ引用は、すべて原文をそのまま切り出したもの（機械で照合済み）。エージェントが書いたのは見出し・状態・注記・「訳」だけ。要約はしていない。</p>']
     for c in data["claims"]:
-        cls = "status none" if c["status"] == "付かなかった" else "status"
-        body.append(f'<h2>{esc(c["claim"])}<span class="{cls}">{esc(c["status"])}</span></h2>')
+        status = OLD_STATUS.get(c["status"], c["status"])
+        cls = "status none" if status == "根拠なし" else "status"
+        body.append(f'<h2>{esc(c["claim"])}<span class="{cls}">{esc(status)}</span></h2>')
         if c.get("note"):
             body.append(f'<p class="note">{esc(c["note"])}</p>')
         for q in c.get("quotes", []):

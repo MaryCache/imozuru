@@ -20,7 +20,7 @@
 
 digest.json の形:
     {"title", "question", "stopped",
-     "claims"?: [{"claim", "status": "付いた|一部だけ|付かなかった"}],
+     "claims"?: [{"claim", "status": "根拠あり|一部のみ|根拠なし"}],
      "levels": {"lv1": 編, "lv2": 編, "lv3": 編},
      "people_places": [文], "unresolved": ["..."]}
     編 = {"summary": [文], "terms": [{"term", "sentences": [文]}], "answers": [{"claim", "sentences": [文]}],
@@ -126,9 +126,7 @@ def sentence_problems(src: Path, where: str, sentences) -> list[str]:
     return bad
 
 
-CLAIM_STATUS = ("付いた", "一部だけ", "付かなかった")
-# digest.json の値は map.md と同じ言葉のまま、ページでは読み手の言葉で出す
-CLAIM_LABEL = {"付いた": "根拠あり", "一部だけ": "一部のみ", "付かなかった": "根拠なし"}
+CLAIM_STATUS = ("根拠あり", "一部のみ", "根拠なし")
 SITES_SHOWN = 10
 
 
@@ -145,18 +143,18 @@ def check(topic: Path, data: dict) -> list[str]:
         for t in lv.get("terms") or []:
             bad += sentence_problems(src, f"{name}の用語「{t.get('term')}」", t.get("sentences"))
         for a in lv.get("answers") or []:
-            bad += sentence_problems(src, f"{name}の主張「{a.get('claim')}」", a.get("sentences"))
-        # 確かめる問いの答えも解説と同じく原文で裏づける。問いの文そのものは主張を含まないので照合しない
+            bad += sentence_problems(src, f"{name}の論点「{a.get('claim')}」", a.get("sentences"))
+        # 確かめる問いの答えも解説と同じく原文で裏づける。問いの文そのものは論点の答えを含まないので照合しない
         for q in lv.get("quiz") or []:
             if not isinstance(q, dict) or not str(q.get("q") or "").strip():
                 bad.append(f"{name}の問い: q が無い")
                 continue
             bad += sentence_problems(src, f"{name}の問い「{q['q'][:20]}」の答え", q.get("answer"))
     for c in data.get("claims") or []:
-        if not isinstance(c, dict) or c.get("status") not in CLAIM_STATUS:
-            bad.append(f"主張の状態は {'・'.join(CLAIM_STATUS)} のどれか: {json.dumps(c, ensure_ascii=False)[:60]}")
+        if not isinstance(c, dict) or report.OLD_STATUS.get(c.get("status"), c.get("status")) not in CLAIM_STATUS:
+            bad.append(f"論点の状態は {'・'.join(CLAIM_STATUS)} のどれか: {json.dumps(c, ensure_ascii=False)[:60]}")
     if data.get("people_places"):
-        bad += sentence_problems(src, "人と場", data["people_places"])
+        bad += sentence_problems(src, "人物と媒体", data["people_places"])
     return bad
 
 
@@ -222,13 +220,14 @@ def levels_html(src: Path, data: dict) -> str:
 
 
 def overview_html(data: dict) -> str:
-    """冒頭は3つに絞る: 調べたこと・調査を区切った理由・主張ごとの付き具合。詳しいものは下へ（概観から詳細へ）。"""
+    """冒頭は3つに絞る: 調べたこと・調査を区切った理由・調査の論点ごとの根拠の有無。詳しいものは下へ（概観から詳細へ）。"""
     out = ['<dl class="overview">',
            f"<dt>調べたこと</dt><dd>{esc(data['question'])}</dd>",
            f"<dt>調査を区切った理由</dt><dd>{esc(data['stopped'])}</dd>"]
     if data.get("claims"):
-        items = "".join(f'<li><span class="st st{CLAIM_STATUS.index(c["status"])}">{CLAIM_LABEL[c["status"]]}</span>{esc(c["claim"])}</li>'
-                        for c in data["claims"])
+        statuses = [report.OLD_STATUS.get(c["status"], c["status"]) for c in data["claims"]]
+        items = "".join(f'<li><span class="st st{CLAIM_STATUS.index(st)}">{st}</span>{esc(c["claim"])}</li>'
+                        for c, st in zip(data["claims"], statuses))
         out.append(f'<dt>調査の論点</dt><dd><ul class="claims">{items}</ul></dd>')
     out.append("</dl>")
     return "".join(out)

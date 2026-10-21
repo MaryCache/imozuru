@@ -29,7 +29,7 @@ SKILL.md の各決まりが、どの原文のどこから来たか。原文は 2
 | starting / chaining / browsing / differentiating / monitoring / extracting | Ellis 1987 博士論文（1989 の JoD 論文の元・本体は有料） | `ellis-1987-phd-behavioural-model.txt` L64、目次 L165-276 |
 | 調べ始めは混乱するのがふつう。詳しいノートは早すぎる閉じを招く。当てはまりそうな事実を並べる | Kuhlthau 1991 "Inside the Search Process" | `kuhlthau-1991-inside-search-process.txt` L345-368 |
 | 1つの方向に決め打ちすると、後の検索が同じ道を強める。仮説を枝分けして比べてから進む | Zhou ら 2026 "Explore Before Committing"（HypoSearch）arXiv 2609.01294 | `arxiv-2609.01294-explore-before-committing.txt` 冒頭の要旨 |
-| 止めどきは確信度ではなく、要る主張の全部を証拠が支えたか | Roh & Han 2026 "HALT" arXiv 2608.02009 | `arxiv-2608.02009-halt.txt` 要旨 |
+| 止めどきは確信度ではなく、調査の論点の全部を証拠が支えたか | Roh & Han 2026 "HALT" arXiv 2608.02009 | `arxiv-2608.02009-halt.txt` 要旨 |
 | 誤りは2種類＝足りているのに探し続ける over-search と、早くやめて外す under-search | Zhang ら 2026 "To Search or Not to Search" arXiv 2602.03304 | `arxiv-2602.03304-to-search-or-not.txt` 要旨 |
 | 独立した2つの探し方の重なりから、まだ見つかっていない総数を見積もる（capture-mark-recapture） | Kastner ら 2007 "Estimating the Horizon of Articles to Decide When to Stop Searching" | `kastner-2007-horizon-estimate.md` L51 |
 | 知らない用語は粒度の粗い順に＝百科事典 → 専門事典 → 教科書・講義資料 → サーベイ → 原著 | 横井祥 2017 「Examine the meaning of unknown terms」（Speaker Deck） | `eumesy-unknown-terms.md` L343-373 |
@@ -51,7 +51,7 @@ SKILL.md の各決まりが、どの原文のどこから来たか。原文は 2
 ## 3つの題材で試して分かったこと（2026-10-09）
 
 - 題材＝探し方の研究（親が手で）／AI 生成画像の編集可能化（論文の多い分野・2回）／大陸塗り（論文が無く個人の発信だけの分野）
-- 主張を「〜がある」だけで並べると1周で埋まり、依頼の芯が抜けたまま止まる → 主張の1つは依頼の条件そのまま、半分以上は原文を読まないと答えられない形
+- 論点を「〜がある」だけで並べると1周で埋まり、依頼の芯が抜けたまま止まる → 論点の1つは依頼の条件そのまま、半分以上は原文を読まないと答えられない形
 - 論文の多い分野では chain.py が古い論文に効き、新しい論文（出て1年ほど）には効かない
 - 個人の発信の分野では chain.py も DOI も使えず、道具は fetch.py と WebSearch だけ。standard の検索はほぼ空振りで extended で一斉に出た。大事な中身は X・pixiv・小紅書のログインの壁の向こうに集まる
 - 日本語の記事は短くても本物（2,904字）。英語の論文向けの下限 3,000 字では落ちる
