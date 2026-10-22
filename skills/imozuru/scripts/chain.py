@@ -225,18 +225,29 @@ def log(topic: str, round_: int, cmd: str, key: str, works: list[dict]) -> None:
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import digest  # 同じフォルダ。--log を使うときだけ読む
+
+    def http_url(u):
+        if not isinstance(u, str):
+            return False
+        try:
+            return urllib.parse.urlsplit(u).scheme in ("http", "https")
+        except ValueError:
+            return False
+
     hits = []
     for w in works:
-        oa = (w.get("best_oa_location") or {}).get("pdf_url")
-        url = w.get("doi") or w.get("id") or ""
+        location = w.get("best_oa_location")
+        oa = location.get("pdf_url") if isinstance(location, dict) else None
+        url = next((u for u in (w.get("doi"), w.get("id")) if http_url(u)), None)
         if not url:
             continue
         hit = {"title": clean(w.get("display_name") or ""), "url": url}
-        if oa:
+        if http_url(oa):
             hit["also"] = [oa]
         hits.append(hit)
-    digest.append_records(Path(topic).expanduser(), [{
-        "round": round_, "by": "chain.py", "method": cmd, "query": key, "hits": hits}])
+    record = digest.normalize_record({
+        "round": round_, "by": "chain.py", "method": cmd, "query": key, "hits": hits}, None, None)
+    digest.append_records(Path(topic).expanduser(), [record])
 
 
 if __name__ == "__main__":

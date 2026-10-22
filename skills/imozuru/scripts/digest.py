@@ -34,11 +34,13 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import report  # noqa: E402  照合と引用の描画は抜き書きと同じものを使う
+import skin  # noqa: E402  見た目（コルク板と象牙の紙）は抜き書き・ダッシュボードと共通
 
 QUERIES = "queries.jsonl"
 FETCH_LOG = "fetch-log.jsonl"
@@ -163,8 +165,11 @@ esc = report.esc
 
 def link(url: str, text: str) -> str:
     """http(s) だけをリンクにする。javascript: などはそのまま文字で出す。"""
-    if urlsplit(url).scheme in ("http", "https"):
-        return f'<a href="{esc(url)}" rel="noreferrer noopener">{esc(text or url)}</a>'
+    try:
+        if urlsplit(url).scheme in ("http", "https"):
+            return f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer">{esc(text or url)}</a>'
+    except ValueError:
+        pass
     return esc(text or url)
 
 
@@ -201,7 +206,7 @@ def level_html(src: Path, key: str, name: str, lead: str, lv: dict) -> str:
             body.append(f'<h4>{esc(a["claim"])}</h4>{sentences_html(src, a["sentences"])}')
     if lv.get("quiz"):
         # 自分で思い出してから答えを見る形にする。読み返すより、自分をテストするほうが定着する（Dunlosky ら 2013）
-        body.append('<h3>理解の確認</h3><p class="note">答えを見る前に、自分の言葉で答えてみる。</p>')
+        body.append('<h3>理解の確認</h3>')
         for q in lv["quiz"]:
             body.append(f'<div class="quiz"><p class="q">{esc(q["q"])}</p><details class="ans"><summary>答えを見る</summary>'
                         + sentences_html(src, q["answer"]) + "</details></div>")
@@ -216,7 +221,7 @@ def levels_html(src: Path, data: dict) -> str:
                      for i, (k, _, _) in enumerate(LEVELS))
     tabs = "".join(f'<label for="t-{k}">{esc(n)}<small>{esc(lead)}</small></label>' for k, n, lead in LEVELS)
     sections = "".join(level_html(src, k, n, lead, data["levels"][k]) for k, n, lead in LEVELS)
-    return f'<div class="levels" id="explain">{inputs}<div class="tabs">{tabs}</div>{sections}</div>'
+    return f'<div class="levels sheet" id="explain">{inputs}<div class="tabs">{tabs}</div>{sections}</div>'
 
 
 def overview_html(data: dict) -> str:
@@ -247,7 +252,10 @@ def sites_html(records: list[dict], fetched: dict[str, dict]) -> str:
     sites: dict[str, list[int]] = {}
     for r in records:
         for h in r["hits"]:
-            host = (urlsplit(h["url"]).hostname or "?").removeprefix("www.")
+            try:
+                host = (urlsplit(h["url"]).hostname or "?").removeprefix("www.")
+            except ValueError:
+                host = "?"
             row = sites.setdefault(host, [0, 0, 0])
             row[0] += 1
             f, _ = hit_status(h, fetched)
@@ -275,15 +283,14 @@ def records_html(records: list[dict], fetched: dict[str, dict]) -> str:
     linked = set()
     total_hits = sum(len(r["hits"]) for r in records)
     empty = sum(1 for r in records if not r["hits"])
-    body = ['<section id="record"><h2>調査記録<span class="status">自動生成</span></h2>',
-            f'<p class="note">検索 {len(records)}本・ヒット {total_hits}件・空振り {empty}本。'
-            "ヒットは検索で挙がったものの全件で、〔保存〕は原文を保存できたもの。</p>",
+    body = ['<section class="sheet" id="record"><h2>調査記録<span class="status">自動生成</span></h2>',
+            f'<p class="note">検索 {len(records)}本・ヒット {total_hits}件・空振り {empty}本</p>',
             sites_html(records, fetched),
             "<h3>検索語別の全結果</h3>"]
     for rnd in sorted({r["round"] for r in records}):
         rs = [r for r in records if r["round"] == rnd]
         n_hits = sum(len(r["hits"]) for r in rs)
-        body.append(f"<details><summary>{rnd}周目（検索 {len(rs)}本・ヒット {n_hits}件）</summary>")
+        body.append(f"<details><summary>{esc(str(rnd))}周目（検索 {len(rs)}本・ヒット {n_hits}件）</summary>")
         for r in rs:
             body.append(f'<h4>「{esc(r["query"])}」<span class="meta">{esc(r["by"])}・{esc(r["method"])}</span></h4>')
             if not r["hits"]:
@@ -305,8 +312,7 @@ def records_html(records: list[dict], fetched: dict[str, dict]) -> str:
         body.append("</details>")
     loose = [f for k, f in fetched.items() if k not in linked]
     if loose:
-        body.append("<h3>検索結果以外から取得した原文</h3>"
-                    '<p class="note">記事の中のリンクの追跡、別の URL での取り直し、ブラウザでの取得など。</p><ul class="hits">')
+        body.append('<h3>検索結果以外から取得した原文</h3><ul class="hits">')
         for f in loose:
             st = "保存" if f.get("status") == "OK" else "取得失敗"
             detail = f.get("file", "") if f.get("status") == "OK" else f.get("reason", "")
@@ -332,7 +338,11 @@ ul.claims li{margin:.35rem 0;display:flex;gap:.5rem;align-items:baseline}
 .st1{border-style:dotted}
 .st2{border-style:dashed;color:var(--sub);border-color:var(--sub)}
 .levels>input{position:absolute;opacity:0;pointer-events:none}
-.tabs{display:flex;gap:.4rem;margin:2.5rem 0 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+/* 3編のタブは同じ幅で1段に並べる。折り返すと、スマホで Lv3 だけが2段目に落ちた（2026-10-22 かしぇ） */
+.tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin:0;border-bottom:1px solid var(--line)}
+@media (max-width:600px){.tabs label{padding:.4rem .5rem .45rem;font-size:.92rem}.tabs label small{font-size:.62rem;line-height:1.35}}
+/* 紙の中の最初の見出し（要旨など）は、ピンと切り替えの札の下に少し間を取る */
+.lv>h3:first-of-type{margin-top:1.4rem}
 .tabs label{cursor:pointer;padding:.45rem .9rem .5rem;border:1px solid var(--line);border-bottom:none;border-radius:8px 8px 0 0;color:var(--sub);font-weight:600}
 .tabs label small{display:block;font-weight:400;font-size:.7rem}
 .lv{display:none}
@@ -372,7 +382,12 @@ REMEMBER_JS = ("try{var k='imozuru-digest-lv',v=localStorage.getItem(k),e=v&&doc
 
 def build(topic: Path, check_only: bool) -> int:
     data = json.loads((topic / "digest.json").read_text(encoding="utf-8"))
-    records = load_jsonl(topic / QUERIES)
+    # 壊れた記録を飛ばすと調査の全件と誤認させるので、理由を出して前のページを残す
+    try:
+        records = [normalize_record(r, None, None) for r in load_jsonl(topic / QUERIES)]
+    except ValueError as e:
+        print(f"{topic / QUERIES} を読めなかった: {e}", file=sys.stderr)
+        return 1
     bad = check(topic, data)
     if bad:
         print("根拠の照合に通らない文がある（根拠が無いか、引用が原文と合わない）:")
@@ -384,39 +399,36 @@ def build(topic: Path, check_only: bool) -> int:
 
     src = topic / "sources"
     fetched = fetch_status(load_jsonl(topic / FETCH_LOG))
+    # 冒頭・解説・人物と媒体・未解決の点・調査記録を、それぞれ1枚の紙にする
     nav = ['<a href="#explain">解説</a>']
-    body = [f"<h1>{esc(data['title'])}</h1>", overview_html(data),
-            '<p class="note">解説の文を押すと、その文の根拠として原文からそのまま切り出した引用（機械で照合済み）が開く。'
-            "解説はエージェントが書き、調査記録は機械で生成した。</p>"]
     sections = [levels_html(src, data)]
     if data.get("people_places"):
-        sections.append('<section id="people"><h2>主な人物と媒体</h2>' + sentences_html(src, data["people_places"]) + "</section>")
+        sections.append('<section class="sheet" id="people"><h2>主な人物と媒体</h2>' + sentences_html(src, data["people_places"]) + "</section>")
         nav.append('<a href="#people">人物と媒体</a>')
     if data.get("unresolved"):
-        sections.append('<section id="open"><h2>未解決の点</h2><ul>'
+        sections.append('<section class="sheet" id="open"><h2>未解決の点</h2><ul>'
                         + "".join(f"<li>{esc(u)}</li>" for u in data["unresolved"]) + "</ul></section>")
         nav.append('<a href="#open">未解決の点</a>')
     sections.append(records_html(records, fetched))
     nav.append('<a href="#record">調査記録</a>')
-    body.append("<nav>" + "".join(nav) + "</nav>")
+    # 操作の案内は書かない（2026-10-21 かしぇ「長々と注釈や操作案内を書きたくない」）。調査記録が機械の生成であることは見出しの札が示す
+    body = ['<section class="sheet">', f"<h1>{esc(data['title'])}</h1>", overview_html(data),
+            "<nav>" + "".join(nav) + "</nav></section>"]
     body += sections
     body.append(f'<footer>imozuru の詳細レポート・原文はこのページと同じ場所の {esc(src.name)}/</footer>')
 
-    # スクリプトは中身のハッシュで許可する。'unsafe-inline' にすると、原文から紛れ込んだ文字列も動きうる
-    digest_b64 = base64.b64encode(hashlib.sha256(REMEMBER_JS.encode()).digest()).decode()
-    page = f"""<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{digest_b64}'">
-<title>{esc(data['title'])} 詳細レポート</title><style>{CSS}</style></head>
-<body><main>
-{chr(10).join(body)}
-</main><script>{REMEMBER_JS}</script></body></html>
-"""
+    # スクリプトは中身のハッシュで許可する（skin.page）。'unsafe-inline' にすると、原文から紛れ込んだ文字列も動きうる
+    page = skin.page(f"{data['title']} 詳細レポート", "\n".join(body),
+                     extra_head=f"<style>{CSS}</style>", scripts=(REMEMBER_JS,))
     out = topic / "digest.html"
-    # 一時ファイルに書いてから置き換える。途中で止まっても前のページが壊れずに残る
-    tmp = out.with_name(".digest.html.tmp")
-    tmp.write_text(page, encoding="utf-8")
-    os.replace(tmp, out)
+    # 同じ場所に排他的に作り、仕込まれたリンクを踏まず、途中で止まっても前のページを残す
+    fd, tmp = tempfile.mkstemp(prefix=".digest.html.", suffix=".tmp", dir=out.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(page)
+        os.replace(tmp, out)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
     print(f"→ {out}")
     return 0
 

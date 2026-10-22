@@ -65,6 +65,13 @@ class DigestTests(unittest.TestCase):
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             return digest.main()
 
+    def build_report(self):
+        data = {"title": "夕焼け", "question": "なぜ赤いか", "stopped": "照合済み",
+                "claims": [{"claim": "散乱", "status": "根拠あり", "quotes": sentence("")["quotes"]}]}
+        (self.topic / "extracts.json").write_text(json.dumps(data), encoding="utf-8")
+        with patch.object(sys, "argv", ["report.py", str(self.topic)]), contextlib.redirect_stdout(io.StringIO()):
+            return digest.report.main()
+
     def test_cited_digest_builds_page_with_both_levels(self):
         code, _ = self.build()
         self.assertEqual(code, 0)
@@ -127,6 +134,61 @@ class DigestTests(unittest.TestCase):
         self.assertIn("paper.txt", page)
         # 検索で挙がっていない取得も隠さず出す
         self.assertIn("other.example.test/x", page)
+        self.assertIn('href="http://www.example.test/paper/" target="_blank" rel="noopener noreferrer"', page)
+
+    def test_malformed_hit_urls_build_as_text_and_unknown_host(self):
+        urls = ("https://example.test＃evil/", "https://example.test：443/", "https://[example.test/")
+        record = {"round": 1, "query": "壊れた URL", "hits": [{"title": u, "url": u} for u in urls]}
+        (self.topic / "queries.jsonl").write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(self.build()[0], 0)
+        page = (self.topic / "digest.html").read_text(encoding="utf-8")
+        self.assertIn('<th scope="row">?</th>', page)
+        self.assertIn("<td>3</td>", page)
+        for url in urls:
+            self.assertIn(url, page)
+            self.assertNotIn(f'href="{url}"', page)
+
+    def test_loaded_records_reject_non_integer_round_and_keep_prior_page(self):
+        prior = self.topic / "digest.html"
+        prior.write_text("Previous", encoding="utf-8")
+        for rnd in ('<img src=x onerror="alert(1)">', True, None, 1.5):
+            with self.subTest(round=rnd):
+                (self.topic / "queries.jsonl").write_text(
+                    json.dumps({"round": rnd, "query": "q", "by": "a", "method": "m", "hits": []}), encoding="utf-8")
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(self.build()[0], 1)
+                self.assertIn("queries.jsonl", err.getvalue())
+                self.assertIn("周（round）が整数でない", err.getvalue())
+                self.assertEqual(prior.read_text(encoding="utf-8"), "Previous")
+
+    def test_record_round_is_escaped_on_output(self):
+        rnd = "<img src=x onerror=alert(1)>"
+        page = digest.records_html([{"round": rnd, "query": "q", "by": "a", "method": "m", "hits": []}], {})
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;周目", page)
+        self.assertNotIn(rnd, page)
+
+    def test_page_writes_ignore_planted_old_temp_symlinks(self):
+        for name, build in (("digest", self.build), ("report", self.build_report)):
+            with self.subTest(page=name):
+                victim = self.topic.parent / f"keep-{name}.txt"
+                victim.write_text("Keep", encoding="utf-8")
+                planted = self.topic / f".{name}.html.tmp"
+                planted.symlink_to(victim)
+                build()
+                self.assertEqual(victim.read_text(encoding="utf-8"), "Keep")
+                self.assertTrue(planted.is_symlink())
+                self.assertIn("<!doctype html>", (self.topic / f"{name}.html").read_text(encoding="utf-8"))
+
+    def test_failed_page_replace_cleans_temp_and_keeps_prior_page(self):
+        for name, module, build in (("digest", digest, self.build), ("report", digest.report, self.build_report)):
+            with self.subTest(page=name):
+                prior = self.topic / f"{name}.html"
+                prior.write_text("Previous", encoding="utf-8")
+                with patch.object(module.os, "replace", side_effect=OSError("replace failed")):
+                    with self.assertRaisesRegex(OSError, "replace failed"):
+                        build()
+                self.assertEqual(prior.read_text(encoding="utf-8"), "Previous")
+                self.assertEqual(list(self.topic.glob(f".{name}.html.*")), [])
 
     def test_non_http_hit_is_not_linked(self):
         self.add([{"query": "q", "hits": [{"title": "bad", "url": "javascript:alert(1)"}]}], "--round", "1")
@@ -203,6 +265,27 @@ class FetchLogTests(unittest.TestCase):
 
 
 class ChainLogTests(unittest.TestCase):
+    def test_chain_log_filters_untrusted_url_fields(self):
+        works = [
+            {"doi": 123, "id": "https://openalex.org/W1", "best_oa_location": {"pdf_url": 42}},
+            {"doi": {"url": "bad"}, "id": "https://openalex.org/W2", "best_oa_location": {"pdf_url": {}}},
+            {"doi": "javascript:alert(1)", "id": "https://openalex.org/W3", "best_oa_location": "bad"},
+            {"doi": "https://[bad", "id": "https://openalex.org/W4", "best_oa_location": {"pdf_url": "file:///x"}},
+            {"doi": None, "id": 123}, {"doi": {}, "id": {}},
+            {"doi": "ftp://example.test/x", "id": "javascript:alert(1)"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            chain.log(tmp, 1, "find", "q", works)
+            record = json.loads((Path(tmp) / "queries.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual([h["url"] for h in record["hits"]], [f"https://openalex.org/W{i}" for i in range(1, 5)])
+        self.assertTrue(all("also" not in h for h in record["hits"]))
+        self.assertEqual(record, digest.normalize_record(record, None, None))
+
+    def test_chain_log_validates_record_before_appending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "周（round）が整数でない"):
+                chain.log(tmp, "<b>1</b>", "find", "q", [])
+            self.assertFalse((Path(tmp) / "queries.jsonl").exists())
+
     def test_chain_log_records_listed_works(self):
         works = {"meta": {"count": 1}, "results": [
             {"id": "https://openalex.org/W1", "display_name": "Rayleigh", "publication_year": 1871,

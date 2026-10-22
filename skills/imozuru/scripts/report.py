@@ -26,7 +26,11 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path, PureWindowsPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import skin  # noqa: E402  見た目（コルク板と象牙の紙）と色は skin.py・palette.py の1か所に置く
 
 # 2026-10-21 まで使っていた状態の言葉。前に書いた extracts.json も読めるよう、新しい言葉に読み替える
 OLD_STATUS = {"付いた": "根拠あり", "一部だけ": "一部のみ", "付かなかった": "根拠なし"}
@@ -100,7 +104,7 @@ def quote_html(src_dir: Path, q: dict, ctx: list[str], c0: int) -> str:
     parts = ['<figure class="quote">']
     if q.get("who"):
         parts.append(f'<div class="who">{esc(q["who"])}</div>')
-    parts.append(f'<blockquote>{esc(q["text"])}</blockquote>')
+    parts.append(f'<blockquote{skin.lang_attr(q["text"])}>{esc(q["text"])}</blockquote>')
     if q.get("ja"):
         parts.append(f'<p class="ja"><span class="tag">訳</span>{esc(q["ja"])}</p>')
     meta = [f'<code>{esc(loc)}</code>']
@@ -109,19 +113,15 @@ def quote_html(src_dir: Path, q: dict, ctx: list[str], c0: int) -> str:
     if q.get("context_note"):
         meta.append(f'<span class="cn">{esc(q["context_note"])}</span>')
     parts.append(f'<figcaption>{" ".join(meta)}</figcaption>')
-    parts.append(f'<details><summary>前後を読む（{c0}〜{c0 + len(ctx) - 1}行）</summary><pre>{ctx_html}</pre></details>')
+    parts.append(f'<details><summary>前後を読む（{c0}〜{c0 + len(ctx) - 1}行）</summary><pre{skin.lang_attr(" ".join(ctx))}>{ctx_html}</pre></details>')
     parts.append("</figure>")
     return "\n".join(parts)
 
 
-CSS = """
-:root{--bg:#f6efd3;--ink:#2e1703;--sub:#6b4a26;--accent:#814e0d;--card:#fbf7e8;--line:#e2cf9f;--hit:#efdcab}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#1f1710;--ink:#f1e6cc;--sub:#c9b28a;--accent:#e0a85a;--card:#2a2016;--line:#4a3a26;--hit:#4a3820}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans JP","Hiragino Sans","Yu Gothic UI",sans-serif;line-height:1.85;font-size:16px}
-main{max-width:46rem;margin:0 auto;padding:2.5rem 1rem 5rem}
-h1{font-size:1.6rem;margin:0 0 .5rem;letter-spacing:.02em}
-h2{font-size:1.2rem;margin:3rem 0 .4rem;padding-top:1rem;border-top:1px solid var(--line)}
+# 地と紙と書体は skin.CSS。ここは抜き書きに固有の部品だけ。論点ごとに1枚の紙（.sheet）に載せる
+CSS = skin.CSS + """
+h1{font-size:1.6rem;margin:0 0 .5rem}
+h2{font-size:1.2rem;margin:0 0 .4rem}
 .lead{color:var(--sub);margin:.2rem 0}
 .status{display:inline-block;font-size:.8rem;padding:.05rem .55rem;border-radius:99px;border:1px solid var(--accent);color:var(--accent);margin-left:.5rem;vertical-align:middle}
 .status.none{border-style:dashed;color:var(--sub);border-color:var(--sub)}
@@ -141,7 +141,7 @@ pre span{display:block}
 pre span.hit{background:var(--hit)}
 pre b{display:inline-block;min-width:3em;color:var(--sub);font-weight:400}
 ul.unreached li{margin:.2rem 0}
-footer{margin-top:4rem;font-size:.8rem;color:var(--sub)}
+footer{margin-top:2rem;font-size:.8rem}
 """
 
 
@@ -171,43 +171,43 @@ def main() -> int:
     if check_only:
         return 0
 
-    body = [f"<h1>{esc(data['title'])}</h1>",
+    # 冒頭と、論点ごとに1枚ずつの紙にする
+    body = ['<section class="sheet">', f"<h1>{esc(data['title'])}</h1>",
             f'<p class="lead">調べたこと: {esc(data["question"])}</p>',
             f'<p class="lead">調査を区切った理由: {esc(data["stopped"])}</p>',
-            '<p class="note">ここに並ぶ引用は、すべて原文をそのまま切り出したもの（機械で照合済み）。エージェントが書いたのは見出し・状態・注記・「訳」だけ。要約はしていない。</p>']
+            "</section>"]
     for c in data["claims"]:
         status = OLD_STATUS.get(c["status"], c["status"])
         cls = "status none" if status == "根拠なし" else "status"
-        body.append(f'<h2>{esc(c["claim"])}<span class="{cls}">{esc(status)}</span></h2>')
+        body.append(f'<section class="sheet"><h2>{esc(c["claim"])}<span class="{cls}">{esc(status)}</span></h2>')
         if c.get("note"):
             body.append(f'<p class="note">{esc(c["note"])}</p>')
         for q in c.get("quotes", []):
             ctx, c0 = rendered[id(q)]
             body.append(quote_html(src, q, ctx, c0))
+        body.append("</section>")
     for d in data.get("disagreements", []):
-        body.append(f'<h2>食い違い: {esc(d["topic"])}</h2><p class="note">どれが正しいかは書かない。並べるだけ。</p>')
+        body.append(f'<section class="sheet"><h2>食い違い: {esc(d["topic"])}</h2>')
         for q in d.get("quotes", []):
             ctx, c0 = rendered[id(q)]
             body.append(quote_html(src, q, ctx, c0))
+        body.append("</section>")
     if data.get("unreached"):
-        body.append("<h2>届かなかったもの</h2><ul class=\"unreached\">"
-                    + "".join(f"<li>{esc(u)}</li>" for u in data["unreached"]) + "</ul>")
+        body.append('<section class="sheet"><h2>届かなかったもの</h2><ul class="unreached">'
+                    + "".join(f"<li>{esc(u)}</li>" for u in data["unreached"]) + "</ul></section>")
     # 絶対パスはページを人に渡すと手元のユーザー名を漏らすので、ページからの相対で書く
     body.append(f'<footer>imozuru の抜き書き・原文はこのページと同じ場所の {esc(src.name)}/</footer>')
 
-    page = f"""<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>{esc(data['title'])} 抜き書き</title><style>{CSS}</style></head>
-<body><main>
-{chr(10).join(body)}
-</main></body></html>
-"""
+    page = skin.page(f"{data['title']} 抜き書き", "\n".join(body), extra_head=f"<style>{CSS}</style>")
     out = topic / "report.html"
-    # 一時ファイルに書いてから置き換える。途中で止まっても前のページが壊れずに残る
-    tmp = out.with_name(".report.html.tmp")
-    tmp.write_text(page, encoding="utf-8")
-    os.replace(tmp, out)
+    # 同じ場所に排他的に作り、仕込まれたリンクを踏まず、途中で止まっても前のページを残す
+    fd, tmp = tempfile.mkstemp(prefix=".report.html.", suffix=".tmp", dir=out.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(page)
+        os.replace(tmp, out)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
     print(f"→ {out}")
     return 0
 
