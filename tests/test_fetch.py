@@ -220,6 +220,43 @@ class FetchPreservationTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), text)
         self.assertIn(f"OK\tpaper\t{target}\t", self.stdout.getvalue())
         self.assertFalse(any(p.is_dir() for p in self.sources.iterdir()))
+        self.assertEqual(set(self.snapshot()), {"paper.pdf", "paper.txt", "unrelated.md"})
+
+    def test_failed_second_replace_restores_both_files(self):
+        for existing in (True, False):
+            with self.subTest(existing=existing):
+                if existing:
+                    self.seed(".pdf", ".txt")
+                before = self.snapshot()
+                replace = Path.replace
+
+                def fail_text(path, target):
+                    if path.name == "paper.txt" and path.parent != self.sources:
+                        raise OSError("Cannot replace text")
+                    return replace(path, target)
+
+                with patch.object(fetch, "download", return_value=(b"%PDF-1.4\nNew PDF", "application/pdf")), \
+                        patch.object(fetch, "pdf_to_text", side_effect=self.pdf_text("New PDF text\n" * 300)), \
+                        patch.object(Path, "replace", fail_text):
+                    with self.assertRaisesRegex(OSError, "Cannot replace text"):
+                        self.run_fetch()
+                self.assert_preserved(before)
+                for suffix in (".pdf", ".txt"):
+                    (self.sources / f"paper{suffix}").unlink(missing_ok=True)
+
+    def test_failed_backup_preserves_pdf_and_destination_directory(self):
+        self.seed(".pdf")
+        before = self.snapshot()
+        target = self.sources / "paper.txt"
+        target.mkdir()
+        (target / "original.txt").write_bytes(b"Keep directory contents")
+        with patch.object(fetch, "download", return_value=(b"%PDF-1.4\nNew PDF", "application/pdf")), \
+                patch.object(fetch, "pdf_to_text", side_effect=self.pdf_text("New PDF text\n" * 300)):
+            with self.assertRaises(OSError):
+                self.run_fetch()
+        self.assertEqual((target / "original.txt").read_bytes(), b"Keep directory contents")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual({p.name for p in self.sources.iterdir()}, {*before, "paper.txt"})
 
     def test_successful_youtube_retry_replaces_transcript(self):
         self.seed(".md")
@@ -297,18 +334,89 @@ class FetchPreservationTests(unittest.TestCase):
         self.assert_preserved(before)
 
     def test_pmc_is_recognized_by_host_not_anywhere_in_url(self):
-        self.assertEqual(fetch.pmc_id("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), "PMC1234567")
-        self.assertEqual(fetch.pmc_id("https://www.ncbi.nlm.nih.gov/pmc/articles/pmc1234567"), "PMC1234567")
-        self.assertEqual(fetch.pmc_id("https://europepmc.org/article/PMC/PMC1234567"), "PMC1234567")
+        for base in ("https://pmc.ncbi.nlm.nih.gov/articles/",
+                     "https://www.ncbi.nlm.nih.gov/pmc/articles/",
+                     "https://europepmc.org/article/PMC/"):
+            for suffix in ("PMC1234567", "pmc1234567/"):
+                with self.subTest(url=base + suffix):
+                    self.assertEqual(fetch.pmc_id(base + suffix), "PMC1234567")
+            for suffix in ("PMC1234567fake", "PMC1234567/../../articles/PMC7654321/",
+                           "../PMC1234567/", "PMC1234567/./", "PMC1234567//"):
+                with self.subTest(url=base + suffix):
+                    self.assertIsNone(fetch.pmc_id(base + suffix))
         # 他人のページの URL に書き込まれた PMCID の本文を、そのページの原文として保存しない
         self.assertIsNone(fetch.pmc_id("https://evil.example/?next=pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"))
         self.assertIsNone(fetch.pmc_id("https://pmc.ncbi.nlm.nih.gov.evil.example/articles/PMC1234567/"))
 
     def test_jats_with_entity_declaration_is_refused(self):
-        xml = b'<?xml version="1.0"?><!DOCTYPE a [<!ENTITY x "xx">]><article>&x;</article>'
+        self.seed(".md")
+        before = self.snapshot()
+        for encoding, bom in (("utf-8", b""), ("utf-16le", b"\xff\xfe"), ("utf-16be", b"\xfe\xff")):
+            for declaration in ('<!ENTITY x "xx">', '<!ENTITY x SYSTEM "file:///etc/passwd">'):
+                with self.subTest(encoding=encoding, declaration=declaration):
+                    xml = bom + (f'<?xml version="1.0"?><!DOCTYPE article [{declaration}]>'
+                                 '<article>&x;</article>').encode(encoding)
+                    with self.assertRaisesRegex(ValueError, "ENTITY"):
+                        fetch.jats_to_md(xml, "https://example.org/", "https://example.org/fullTextXML")
+                    with patch.object(fetch, "download", return_value=(xml, "application/xml")):
+                        self.assertEqual(self.run_fetch("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), 1)
+                    self.assert_preserved(before)
+        self.assertIn("ENTITY", self.stdout.getvalue())
+
+    def test_jats_pmcid_mismatch_fails_and_preserves(self):
+        self.seed(".md")
+        before = self.snapshot()
+        xml = self.JATS.replace('>PMC1234567</article-id>', '>PMC7654321</article-id>').encode()
         with patch.object(fetch, "download", return_value=(xml, "application/xml")):
             self.assertEqual(self.run_fetch("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), 1)
-        self.assertIn("ENTITY", self.stdout.getvalue())
+        self.assertIn("PMCID", self.stdout.getvalue())
+        self.assert_preserved(before)
+
+    def test_jats_pmcid_accepts_optional_prefix_and_missing_id(self):
+        for article_id in ('<article-id pub-id-type="pmcid">1234567</article-id>',
+                           '<article-id pub-id-type="pmcid">pMc1234567</article-id>', ""):
+            with self.subTest(article_id=article_id):
+                xml = self.JATS.replace('<article-id pub-id-type="pmcid">PMC1234567</article-id>', article_id)
+                with patch.object(fetch, "download", return_value=(xml.encode(), "application/xml")):
+                    self.assertEqual(self.run_fetch("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), 0)
+
+    def test_jats_links_follow_html_safety_rules(self):
+        for tag in ("ext-link", "uri"):
+            for href, expected in (("javascript:alert(1)", "label [x]\\y"),
+                                   ("data:text/html,x", "label [x]\\y"),
+                                   ("https://example.org/a (1)",
+                                    r"[label \[x\]\\y](https://example.org/a%20%281%29)")):
+                with self.subTest(tag=tag, href=href):
+                    xml = (f'<article xmlns:xlink="http://www.w3.org/1999/xlink"><body><p>'
+                           f'<{tag} xlink:href="{href}">label [x]\\y</{tag}>'
+                           '</p></body></article>').encode()
+                    text = fetch.jats_to_md(xml, "https://example.org/", "https://example.org/fullTextXML")
+                    self.assertEqual(text.splitlines()[-1], expected)
+
+    def test_malformed_hrefs_keep_text_without_failing(self):
+        # 全角の「＃」や閉じていない「[」は urlsplit が ValueError を出す。リンク1本で変換全体を落とさない
+        for href in ("https://example.org＃frag", "https://[x"):
+            with self.subTest(href=href):
+                self.assertEqual(fetch.md_link("label", href), "label")
+                parser = fetch._TextExtractor("https://example.org/")
+                parser.feed(f'<p><a href="{href}">bad</a> <a href="https://ok.example/">ok</a></p>')
+                self.assertIn("[ok](https://ok.example/)", parser.text())
+
+    def test_jats_tree_limits_fail_and_preserve(self):
+        self.seed(".md")
+        before = self.snapshot()
+        for limit in ("JATS_MAX_ELEMENTS", "JATS_MAX_DEPTH"):
+            with self.subTest(limit=limit), patch.object(fetch, limit, 3):
+                with patch.object(fetch, "download", return_value=(self.JATS.encode(), "application/xml")):
+                    self.assertEqual(self.run_fetch("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567/"), 1)
+                self.assert_preserved(before)
+                self.assertIn("ValueError", self.stdout.getvalue())
+
+    def test_jats_tree_limits_allow_boundary(self):
+        xml = b'<article><body><p>Body</p><p>Text</p></body></article>'
+        with patch.object(fetch, "JATS_MAX_ELEMENTS", 4), patch.object(fetch, "JATS_MAX_DEPTH", 3):
+            text = fetch.jats_to_md(xml, "https://example.org/", "https://example.org/fullTextXML")
+        self.assertTrue(text.endswith("Body\nText\n"))
 
     def test_failed_first_fetch_leaves_no_partial_source(self):
         with patch.object(fetch, "download", return_value=(b"Short response", "text/plain")):

@@ -35,6 +35,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
+from xml.parsers import expat
 
 # 本文として読める最低の文字数。404 ページや認証の壁は数百〜数千文字に収まる。
 # PDF は英語の論文が多いので高め。HTML は日本語の短い記事を通すため低め
@@ -458,6 +459,24 @@ def ocr_if_longer(pdf: Path, text: str) -> tuple[str, str]:
 HAS_AX = shutil.which("ax") is not None
 
 
+def md_link(text: str, href: str) -> str:
+    """原文のリンクを、開いても危険な処理が動かず markdown の形が崩れないように残す。"""
+    href = href.strip()
+    # JavaScript: や data: のリンクは、.md を開いた先で押すとページの中で動く。http(s) だけ残す。
+    # 全角の「＃」などを含む URL は urlsplit が ValueError を出す。リンク1本でページ全体を FAIL にしない
+    try:
+        scheme = urllib.parse.urlsplit(href).scheme.lower()
+    except ValueError:
+        return text
+    if scheme not in {"http", "https"}:
+        return text
+    # 括弧と空白が URL の中にあると、[文字](URL) の形がそこで切れる
+    href = re.sub(r"[()\s]", lambda m: urllib.parse.quote(m.group(0), safe=""), href)
+    # 「\」を先に符号化する。後にすると、元からある「\]」が「\\]」になって「]」が効き直す
+    text = text.replace("\\", "\\\\").replace("[", r"\[").replace("]", r"\]")
+    return f"[{text}]({href})"
+
+
 class _TextExtractor(HTMLParser):
     """ax が無い環境で、HTML から本文の文字を取り出す。
 
@@ -503,12 +522,11 @@ class _TextExtractor(HTMLParser):
         elif tag == "a":
             href = (dict(attrs).get("href") or "").strip()
             if href and not href.startswith("#"):
-                full = urllib.parse.urljoin(self.base, href)
-                # JavaScript: や data: のリンクは、.md を開いた先で押すとページの中で動く。http(s) だけ残す
-                if urllib.parse.urlsplit(full).scheme.lower() in {"http", "https"}:
-                    # 括弧と空白が URL の中にあると、[文字](URL) の形がそこで切れる
-                    self.href = re.sub(r"[()\s]", lambda m: f"%{ord(m.group(0)):02X}", full)
-                    self.link_text = []
+                try:
+                    self.href = urllib.parse.urljoin(self.base, href)
+                except ValueError:  # 閉じていない「[」などの壊れた href。リンクにせず文字だけ残す
+                    return
+                self.link_text = []
 
     def handle_endtag(self, tag):
         if tag in self.SKIP:
@@ -521,9 +539,7 @@ class _TextExtractor(HTMLParser):
             self._emit("\n")
         elif tag == "a" and self.href is not None:
             text = " ".join("".join(self.link_text).split())
-            # 「\」を先に符号化する。後にすると、元からある「\]」が「\\]」になって「]」が効き直す
-            text = text.replace("\\", "\\\\").replace("[", r"\[").replace("]", r"\]")
-            self._emit(f"[{text}]({self.href})" if text else "")
+            self._emit(md_link(text, self.href) if text else "")
             self.href = None
 
     def handle_data(self, data):
@@ -686,11 +702,14 @@ def pmc_id(url: str) -> str | None:
     """PMC の記事の URL なら PMCID を返す。arxiv_id と同じく、URL のどこかではなくホスト名とパスで見る。"""
     p = urllib.parse.urlsplit(url)
     pattern = PMC_PATHS.get((p.hostname or "").lower().rstrip("."))
-    m = re.match(pattern, p.path, re.I) if pattern else None
+    m = re.fullmatch(pattern + r"/?", p.path, re.I) if pattern else None
     return m.group(1).upper() if m else None
 
 
 EUROPE_PMC_XML = "https://www.ebi.ac.uk/europepmc/webservices/rest/{}/fullTextXML"
+# 長い論文にも余裕を持たせつつ、小さな XML でメモリや再帰の上限を使い切らせない。
+JATS_MAX_ELEMENTS = 200_000
+JATS_MAX_DEPTH = 200
 _XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 # 段落の中の飾りや参照。前後に空白を足すと「Smith et al. ( 2020 )」のように崩れるので、そのままつなぐ
 _JATS_INLINE = {"italic", "bold", "sup", "sub", "sc", "underline", "monospace", "roman", "strike",
@@ -722,7 +741,7 @@ def _jats_raw(el) -> str:
             inner = _jats_raw(child).strip()
             href = child.get(_XLINK_HREF)
             if tag in ("ext-link", "uri") and href and href != inner:
-                inner = f"[{inner}]({href})"  # HTML と同じく、後ろへたどれるようにリンクを残す
+                inner = md_link(inner, href)
         parts.append(inner if tag in _JATS_INLINE else f" {inner} ")
         parts.append(child.tail or "")
     return "".join(parts)
@@ -782,10 +801,28 @@ def jats_to_md(xml: bytes, url: str, xml_url: str) -> str:
     XML をそのまま文字にすると、雑誌名・ID・著者が区切りなく1行目につながって読めなかった
     （2026-10-19 の試しで Dully 2021 など）。題名と書誌は頭の数行にまとめ、本文は行番号で指せる形にする。
     """
-    # JATS は DOCTYPE を必ず持つので watch.py のように DOCTYPE ごとは断れない。外部の DTD は expat が
-    # 取りに行かないので害は無い。膨らむ実体（billion laughs）だけは中で宣言されるので、それを断る
-    if b"<!ENTITY" in xml:
+    def refuse_entity(*args):
         raise ValueError("XML が ENTITY を宣言している")
+
+    count = depth = 0
+
+    def start(tag, attrs):
+        nonlocal count, depth
+        count += 1
+        depth += 1
+        if count > JATS_MAX_ELEMENTS or depth > JATS_MAX_DEPTH:
+            raise ValueError("XML の要素数か深さが上限を超えた")
+
+    def end(tag):
+        nonlocal depth
+        depth -= 1
+
+    # JATS の DOCTYPE は許すが、実体の宣言・外部参照は文字コードに関係なく断る。
+    # 木を作る前に上限も検査し、細工した XML でメモリを使い切らせない。外部 DTD は読まない。
+    parser = expat.ParserCreate()
+    parser.EntityDeclHandler = parser.ExternalEntityRefHandler = refuse_entity
+    parser.StartElementHandler, parser.EndElementHandler = start, end
+    parser.Parse(xml, True)
     root = ET.fromstring(xml)
     meta = root.find("front/article-meta")
     if meta is None:
@@ -793,6 +830,10 @@ def jats_to_md(xml: bytes, url: str, xml_url: str) -> str:
     journal = _jats_flat(root.find("front/journal-meta/journal-title-group/journal-title"))
     year = next((y.text for y in meta.iter("year") if y.text), "")
     ids = {a.get("pub-id-type"): (a.text or "").strip() for a in meta.findall("article-id")}
+    requested = pmc_id(url)
+    if requested and any(not re.fullmatch(r"(?:PMC)?" + requested[3:], (a.text or "").strip(), re.I)
+                         for a in meta.findall("article-id") if a.get("pub-id-type") == "pmcid"):
+        raise ValueError("XML の PMCID が要求した記事と違う")
     authors = []
     for contrib in meta.iter("contrib"):
         if contrib.get("contrib-type") != "author":
@@ -837,12 +878,37 @@ def first_line(text: str) -> str:
 
 
 def save_verified(saved: Path, kept: Path, destination: Path) -> Path:
-    """検査を通ったファイルだけを、同じファイルシステム内で保存先に移す。"""
-    if saved != kept:
-        saved.replace(destination / saved.name)
-    target = destination / kept.name
-    kept.replace(target)
-    return target
+    """検査済みの原文を移し、途中で失敗したら保存済みの原文を戻す。"""
+    files = [saved, kept] if saved != kept else [kept]
+    files = [p for p in files if p.parent != destination]
+    backups, moved = {}, []
+    # 強制終了や電源断のときは退避した写しが残るだけで、自動では戻らない（その備えが要るなら復旧の記録を残す形にする）
+    try:
+        # PDF と本文の片方だけ新しくなると引用元が食い違うので、両方を退避してから移す。
+        for source in files:
+            target = destination / source.name
+            if target.exists() or target.is_symlink():
+                with tempfile.NamedTemporaryFile(prefix=f".{target.name}-", dir=destination, delete=False) as tmp:
+                    backup = Path(tmp.name)
+                try:
+                    target.replace(backup)
+                except BaseException:
+                    backup.unlink()
+                    raise
+                backups[target] = backup
+        for source in files:
+            target = destination / source.name
+            source.replace(target)
+            moved.append(target)
+    except BaseException:
+        for target in moved:
+            target.unlink()
+        for target, backup in backups.items():
+            backup.replace(target)
+        raise
+    for backup in backups.values():
+        backup.unlink()
+    return destination / kept.name
 
 
 def valid_source_name(name: str) -> bool:
