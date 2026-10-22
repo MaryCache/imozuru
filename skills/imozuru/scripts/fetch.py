@@ -17,6 +17,7 @@
 """
 
 import codecs
+import http.client
 import ipaddress
 import os
 import re
@@ -94,16 +95,84 @@ class _Redirect308(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
 
 
-_OPENER = urllib.request.build_opener(_Redirect308)
+def _dial(ip: str, port: int, timeout, source_address):
+    """確かめた IP へつなぐ。テストはここを差し替える。"""
+    return socket.create_connection((ip, port), timeout, source_address)
+
+
+def _pinned_connection(host: str, port: int, timeout, source_address):
+    """つなぐ直前に名前を引き直し、確かめた IP へそのままつなぐ。
+
+    url_problem で名前を引いてから urllib がつなぐまでの間に、引き先を 127.0.0.1 などへ
+    変えられると検査をすり抜ける（DNS rebinding）。つなぐ時に引いた結果をもう一度確かめ、
+    その IP にじかにつなぐので、検査した宛先と実際の宛先がずれない。HTTPS の証明書の確認と
+    SNI はホスト名のまま行われる（2026-10-22 手元で追加）。
+    """
+    try:
+        addrs = list(resolve(host))
+    except (OSError, UnicodeError, ValueError) as e:
+        raise UnsafeURL(f"ホストを引けない（{e}）")
+    if os.environ.get("IMOZURU_ALLOW_PRIVATE") != "1":
+        for addr in addrs:
+            for ip in _addresses_inside(ipaddress.ip_address(addr.split("%", 1)[0])):
+                if not ip.is_global:
+                    raise UnsafeURL(f"つなぐ直前に引いた先が手元や内側の宛先（{ip}）だった")
+    err = None
+    for addr in addrs:
+        try:
+            return _dial(addr, port, timeout, source_address)
+        except OSError as e:
+            err = e
+    raise err or OSError(f"{host} の宛先が無い")
+
+
+class _PinnedMixin:
+    """接続を _pinned_connection で作る。プロキシを通すとき（CONNECT）はプロキシへ素直につなぐ。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = self._pinned_create
+
+    def _pinned_create(self, address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+        if self._tunnel_host:
+            return socket.create_connection(address, timeout, source_address)
+        return _pinned_connection(address[0], address[1], timeout, source_address)
+
+
+class _PinnedHTTPConnection(_PinnedMixin, http.client.HTTPConnection):
+    pass
+
+
+class _PinnedHTTPSConnection(_PinnedMixin, http.client.HTTPSConnection):
+    pass
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        kwargs = {"context": self._context}
+        if hasattr(self, "_check_hostname"):  # 3.11 まで
+            kwargs["check_hostname"] = self._check_hostname
+        return self.do_open(_PinnedHTTPSConnection, req, **kwargs)
+
+
+_OPENER = urllib.request.build_opener(_Redirect308, _PinnedHTTPHandler, _PinnedHTTPSHandler)
 
 
 class UnsafeURL(Exception):
     """取りに行ってはいけない URL。呼び手はほかの取得の失敗と同じく FAIL にする。"""
 
 
-def resolve(host: str) -> set[str]:
-    """ホスト名を引いて IP アドレスの集まりを返す。テストはここを差し替える。"""
-    return {info[4][0] for info in socket.getaddrinfo(host, None)}
+def resolve(host: str) -> list[str]:
+    """ホスト名を引いて IP アドレスを返す。テストはここを差し替える。
+
+    OS が返した順（IPv6 と IPv4 のどちらを先に試すか）を保つ。_pinned_connection はこの順につなぐ。
+    """
+    return list(dict.fromkeys(info[4][0] for info in socket.getaddrinfo(host, None)))
 
 
 def url_problem(url: str) -> str | None:
@@ -113,7 +182,8 @@ def url_problem(url: str) -> str | None:
     手元で動いているサービス（開発用のサーバー・ローカルの AI・ブラウザのデバッグ口）の中身を
     sources/ に写してしまう（2026-10-20 のレビュー）。名前を引いた先が全部インターネット上の
     宛先のときだけ通す。10進や16進で書いた IP も、名前を引けば 127.0.0.1 などになるので同じく止まる。
-    名前を引いてから接続するまでの間に引き先を変える手（DNS rebinding）は防げない。
+    名前を引いてから接続するまでの間に引き先を変える手（DNS rebinding）は、_pinned_connection が
+    つなぐ直前に引き直して確かめた IP へじかにつなぐことで防ぐ。
 
     ホストの部分に「@」か「%」があれば断る。urlsplit は「x@a.example」の a.example を見るが、
     urllib は x@a.example をそのまま引き、「%61」は urllib だけが a に戻す。検査とつなぐ先がずれる。
