@@ -46,6 +46,12 @@ def public_localhost(host):
     return {PUBLIC_IP} if host == "localhost" else REAL_RESOLVE(host)
 
 
+def dial_public_as_local(ip, port, timeout, source_address):
+    """見せかけの PUBLIC_IP へのつなぎを手元のサーバーへ回す（_pinned_connection は引いた IP へじかにつなぐ）。"""
+    import socket
+    return socket.create_connection(("127.0.0.1" if ip == PUBLIC_IP else ip, port), timeout, source_address)
+
+
 class _Server(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/to-private":
@@ -77,6 +83,18 @@ class UnsafeUrlTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://localhost:{self.server.server_port}"
+        for module in (fetch, watch):
+            dial = patch.object(module, "_dial", dial_public_as_local, create=True)
+            dial.start()
+            self.addCleanup(dial.stop)
+
+    def test_dns_rebinding_between_check_and_connect_is_refused(self):
+        """検査の時は外の IP、つなぐ時は 127.0.0.1 を返す名前（DNS rebinding）を断る。"""
+        for module in (fetch, watch):
+            answers = iter([{PUBLIC_IP}, {"127.0.0.1"}])
+            with patch.object(module, "resolve", lambda host: next(answers)), self.subTest(module=module.__name__):
+                with self.assertRaises(module.UnsafeURL):
+                    (module.download if module is fetch else module.fetch)(f"{self.base}/ok")
 
     def test_private_addresses_are_refused(self):
         for url in ("http://127.0.0.1:8080/", "http://[::1]/", "http://[::ffff:127.0.0.1]/",
