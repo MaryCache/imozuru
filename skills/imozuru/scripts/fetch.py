@@ -7,7 +7,8 @@
 
 論文だけでなく個人の発信も落とす。YouTube は字幕を `[分:秒] 文` の形で
 .md にする（場所を時刻で指せるように）。X はログインの壁で本文が取れないので、
-取りに行かずに FAIL を返す。
+取りに行かずに FAIL を返す。PMC の記事ページは captcha で取れないので、
+同じ本文を Europe PMC の全文 XML から取り、見出し・段落ごとの行の .md にする。
 
 使い方:
     fetch.py <sources_dir> <name> <url>
@@ -31,6 +32,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -676,6 +678,145 @@ def youtube_to_md(url: str, out: Path) -> str:
     return body
 
 
+PMC_PATHS = {"pmc.ncbi.nlm.nih.gov": r"/articles/(PMC\d+)", "www.ncbi.nlm.nih.gov": r"/pmc/articles/(PMC\d+)",
+             "europepmc.org": r"/article/PMC/(PMC\d+)"}
+
+
+def pmc_id(url: str) -> str | None:
+    """PMC の記事の URL なら PMCID を返す。arxiv_id と同じく、URL のどこかではなくホスト名とパスで見る。"""
+    p = urllib.parse.urlsplit(url)
+    pattern = PMC_PATHS.get((p.hostname or "").lower().rstrip("."))
+    m = re.match(pattern, p.path, re.I) if pattern else None
+    return m.group(1).upper() if m else None
+
+
+EUROPE_PMC_XML = "https://www.ebi.ac.uk/europepmc/webservices/rest/{}/fullTextXML"
+_XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
+# 段落の中の飾りや参照。前後に空白を足すと「Smith et al. ( 2020 )」のように崩れるので、そのままつなぐ
+_JATS_INLINE = {"italic", "bold", "sup", "sub", "sc", "underline", "monospace", "roman", "strike",
+                "overline", "xref", "ext-link", "uri", "named-content", "styled-content",
+                "inline-formula", "abbrev"}
+# 本文の文字ではないもの（図の差し替え用の説明や ID）
+_JATS_SKIP = {"alt-text", "object-id", "graphic", "inline-graphic", "media"}
+# 見出しを持つ入れ物。title が無ければ下の既定の見出しを使う（無いものは見出しなしで中へ）
+_JATS_SECTIONS = {"sec": "", "abstract": "Abstract", "trans-abstract": "Abstract", "ack": "Acknowledgements",
+                  "app": "Appendix", "ref-list": "References", "glossary": "Glossary", "boxed-text": ""}
+
+
+def _local(tag) -> str:
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _jats_raw(el) -> str:
+    parts = [el.text or ""]
+    for child in el:
+        tag = _local(child.tag)
+        if tag in _JATS_SKIP:
+            inner = ""
+        elif tag == "alternatives":
+            # 同じ式が TeX・MathML・画像で並ぶ。読める TeX を1つだけ残す
+            kids = list(child)
+            pick = next((k for k in kids if _local(k.tag) == "tex-math"), kids[0] if kids else None)
+            inner = _jats_raw(pick) if pick is not None else ""
+        else:
+            inner = _jats_raw(child).strip()
+            href = child.get(_XLINK_HREF)
+            if tag in ("ext-link", "uri") and href and href != inner:
+                inner = f"[{inner}]({href})"  # HTML と同じく、後ろへたどれるようにリンクを残す
+        parts.append(inner if tag in _JATS_INLINE else f" {inner} ")
+        parts.append(child.tail or "")
+    return "".join(parts)
+
+
+def _jats_flat(el) -> str:
+    """要素の文字を1行にする。文献の <surname>Smith</surname><given-names>J</given-names> も語の間を空ける。"""
+    if el is None:
+        return ""
+    text = " ".join(_jats_raw(el).split())
+    return re.sub(r"([(\[])\s+", r"\1", re.sub(r"\s+([,.;:)\]])", r"\1", text))
+
+
+def _jats_blocks(el, level: int, out: list[str]) -> None:
+    """本文の入れ物をたどり、見出しは1行、段落・図表の説明・文献は1つずつ1行にする。"""
+    for child in el:
+        tag = _local(child.tag)
+        if tag in ("title", "label") or tag in _JATS_SKIP:
+            continue  # 見出しは親が書く
+        if tag in _JATS_SECTIONS:
+            title = _jats_flat(child.find("title")) or _JATS_SECTIONS[tag]
+            label = _jats_flat(child.find("label"))
+            if title:
+                out += ["", "#" * min(level, 6) + " " + " ".join(filter(None, [label, title])), ""]
+            _jats_blocks(child, level + 1 if title else level, out)
+        elif tag in ("p", "disp-formula", "disp-quote", "def-item", "fn", "statement"):
+            line = _jats_flat(child)
+            if line:
+                out.append(line)
+        elif tag in ("list",):
+            out += ["- " + _jats_flat(item) for item in child if _local(item.tag) == "list-item"]
+        elif tag in ("fig", "table-wrap", "supplementary-material"):
+            label = _jats_flat(child.find("label")) or {"fig": "図", "table-wrap": "表"}.get(tag, "補足")
+            caption = _jats_flat(child.find("caption"))
+            out.append(f"[{label}] {caption}".rstrip())
+            for row in child.iter():
+                if _local(row.tag) == "tr":
+                    out.append(" | ".join(_jats_flat(cell) for cell in row))
+            for foot in child.findall("table-wrap-foot"):
+                _jats_blocks(foot, level, out)
+        elif tag == "ref":
+            label = _jats_flat(child.find("label"))
+            cites = [c for c in child if _local(c.tag) != "label"]
+            text = " ".join(_jats_flat(c) for c in cites)
+            doi = next((p.text for p in child.iter() if _local(p.tag) == "pub-id"
+                        and p.get("pub-id-type") == "doi" and p.text), None)
+            if doi and f"doi.org/{doi.strip()}" not in text:
+                text += f" https://doi.org/{doi.strip()}"
+            out.append(" ".join(filter(None, [f"[{label}]" if label else "", text])))
+        else:
+            _jats_blocks(child, level, out)  # body・back・fn-group・notes などはそのまま中へ
+
+
+def jats_to_md(xml: bytes, url: str, xml_url: str) -> str:
+    """Europe PMC の全文 XML（JATS）を、見出し・段落ごとの行にした markdown にする。要約はしない。
+
+    XML をそのまま文字にすると、雑誌名・ID・著者が区切りなく1行目につながって読めなかった
+    （2026-10-19 の試しで Dully 2021 など）。題名と書誌は頭の数行にまとめ、本文は行番号で指せる形にする。
+    """
+    # JATS は DOCTYPE を必ず持つので watch.py のように DOCTYPE ごとは断れない。外部の DTD は expat が
+    # 取りに行かないので害は無い。膨らむ実体（billion laughs）だけは中で宣言されるので、それを断る
+    if b"<!ENTITY" in xml:
+        raise ValueError("XML が ENTITY を宣言している")
+    root = ET.fromstring(xml)
+    meta = root.find("front/article-meta")
+    if meta is None:
+        meta = ET.Element("article-meta")
+    journal = _jats_flat(root.find("front/journal-meta/journal-title-group/journal-title"))
+    year = next((y.text for y in meta.iter("year") if y.text), "")
+    ids = {a.get("pub-id-type"): (a.text or "").strip() for a in meta.findall("article-id")}
+    authors = []
+    for contrib in meta.iter("contrib"):
+        if contrib.get("contrib-type") != "author":
+            continue
+        name = contrib.find("name")
+        authors.append(" ".join(filter(None, [_jats_flat(name.find("given-names")),
+                                              _jats_flat(name.find("surname"))]))
+                       if name is not None else _jats_flat(contrib.find("collab")))
+    out = [f"# {_jats_flat(meta.find('title-group/article-title')) or url}", "", url,
+           f"本文: Europe PMC の全文 XML（{xml_url}）",
+           " / ".join(filter(None, [journal, year, ids.get("doi") and f"https://doi.org/{ids['doi']}",
+                                    ids.get("pmcid")])),
+           "著者: " + ", ".join(a for a in authors if a)]
+    keywords = [_jats_flat(k) for k in meta.iter("kwd")]
+    if keywords:
+        out.append("キーワード: " + ", ".join(keywords))
+    # 要旨は article-meta の中にあるので、見出しつきの節として本文・巻末と同じ流れに乗せる
+    parts = ET.Element("article")
+    parts.extend([*meta.findall("abstract"), *meta.findall("trans-abstract"),
+                  *(n for n in (root.find("body"), root.find("back")) if n is not None)])
+    _jats_blocks(parts, 2, out)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip() + "\n"
+
+
 def clean(s: str) -> str:
     """端末に出す文字列から、制御文字（色やクリップボードを操る ESC の並び）と改行の仲間を空白にする。
 
@@ -747,6 +888,21 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         kept = save_verified(kept, kept, destination)
         print(f"OK\t{name}\t{kept}\t{len(body)}\t{first_line(body)}")
         return 0
+
+    pmc = pmc_id(url)
+    if pmc:
+        # PMC の記事ページは urllib には captcha を返す（2026-10-19）。同じ本文を Europe PMC が
+        # 公開の API で全文 XML として配っているので、そちらを正規の別ルートとして取る
+        xml_url = EUROPE_PMC_XML.format(pmc)
+        try:
+            text = jats_to_md(download(xml_url)[0], url, xml_url)
+        except Exception as e:  # 全文が無い（OA でない）と 404 などが返る。XML が壊れていても同じく取れない
+            print(f"FAIL\t{name}\tEurope PMC に全文 XML が無い（{type(e).__name__}: {clean(str(e))}）。"
+                  "PMC は captcha なので、ブラウザで開いてもらう候補")
+            return 1
+        kept = saved = sources / f"{name}.md"
+        kept.write_text(text, encoding="utf-8")
+        return verify_and_save(name, text, saved, kept, destination)
 
     try:
         body, ctype = download(url)
@@ -829,6 +985,12 @@ def fetch_source(sources: Path, name: str, url: str, destination: Path) -> int:
         else:
             trial.unlink(missing_ok=True)
 
+    return verify_and_save(name, text, saved, kept, destination, ocr_note)
+
+
+def verify_and_save(name: str, text: str, saved: Path, kept: Path, destination: Path,
+                    ocr_note: str = "") -> int:
+    """短すぎる本文と壁を FAIL にし、通ったものだけを保存先に移して OK を出す。"""
     # PDF は英語の論文を基準に高い下限。和文の PDF だけは HTML と同じ下限にする
     floor = MIN_TEXT_CHARS if saved.suffix == ".pdf" and not mostly_cjk(text) else MIN_HTML_CHARS
     head = text[:4000].lower()
