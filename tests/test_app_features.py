@@ -129,8 +129,10 @@ class AppFeatureTests(unittest.TestCase):
             self.assertIn(f'name="entry.111" value="{kind}"', page)
 
     def test_feedback_sends_no_page_url_or_research_title(self):
-        # 送る中身に組むのは、書いた内容・版・ブラウザの名乗りだけ。ページの URL（合言葉を含む）を拾う処理を置かない
-        self.assertNotIn("location.href", dash.FEATURE_JS)
+        # 送る中身に組むのは、書いた内容・版・ブラウザの名乗りだけ。送る処理の中にページの URL（合言葉を含む）を拾う所を置かない
+        send = dash.FEATURE_JS.split("// 感想・要望を送る", 1)[1].split("// 文書を PDF で保存", 1)[0]
+        self.assertNotIn("location", send)
+        self.assertNotIn("document.title", send)
         dialog = self.page(form=FORM).split('id="fb-dlg"', 1)[1].split("</dialog>", 1)[0]
         self.assertNotIn("秘密の題", dialog)
         self.assertNotIn(TOKEN, dialog)
@@ -142,6 +144,30 @@ class AppFeatureTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(skin.PRINT_CSS.encode(), body)
         self.assertIn("@media print", skin.CSS)
+
+    def test_print_now_opens_the_document_alone_and_allows_its_script(self):
+        # iPhone と Safari は枠の文書だけを刷れないので、文書を1枚のページとして開き、そこで印刷の画面を出す
+        (self.root / "a-topic" / "digest.html").write_text(
+            '<html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'sha256-AAA\'">'
+            "</head><body><p>x</p></body></html>", encoding="utf-8")
+        import base64, hashlib
+        h = "'sha256-" + base64.b64encode(hashlib.sha256(dash.PRINT_NOW_JS.encode()).digest()).decode() + "'"
+        code, _, body = self.request(f"/a-topic/digest.html?print=1&k={TOKEN}")
+        self.assertEqual(code, 200)
+        text = body.decode()
+        self.assertIn(f"<script>{dash.PRINT_NOW_JS}</script>", text)
+        self.assertIn(f"script-src {h} 'sha256-AAA'", text)
+        # ?print=1 の無いときは差し込まない
+        self.assertNotIn(dash.PRINT_NOW_JS, self.request(f"/a-topic/digest.html?k={TOKEN}")[2].decode())
+        # map.md も同じ
+        (self.root / "a-topic" / "map.md").write_text("# map\n", encoding="utf-8")
+        self.assertIn(dash.PRINT_NOW_JS, self.request(f"/a-topic/map.md?print=1&k={TOKEN}")[2].decode())
+
+    def test_dashboard_page_hides_controls_when_printed(self):
+        block = self.page().split("@media print{", 1)[1].split("\n}", 1)[0]
+        hidden = [line for line in block.splitlines() if "display:none" in line][0]
+        for sel in (".side", "header", ".tools", ".inst-bar", ".imz-hud", ".pager"):
+            self.assertIn(sel, hidden.split("{", 1)[0])
 
     def test_print_button_is_in_the_page(self):
         page = self.page()

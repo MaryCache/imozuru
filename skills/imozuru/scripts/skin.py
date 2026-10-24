@@ -126,6 +126,12 @@ main{max-width:none;padding:0}
 .imz-hud,.tabs,nav,figure.quote>details{display:none!important}
 .lv>h2.sr{position:static;width:auto;height:auto;overflow:visible;clip:auto;white-space:normal;font-size:1.1rem;margin:0 0 .4rem}
 figure.quote,.quiz,dt,ul.claims li,tr{break-inside:avoid}
+/* 引用は枠と左の線と「原文 N」の札を外し、字下げだけで示す（2026-10-25 かしぇが「引用は字下げだけにする」を選んだ）。
+   抜き書き・詳細レポートの見た目の指定はこの後ろに来るので、!important で上書きする */
+figure.quote{background:none!important;border:0!important;border-radius:0!important;padding:0 0 0 1.6em!important;margin:.3rem 0 .9rem!important}
+figure.quote blockquote{border-left:0!important;padding-left:0!important}
+figure.quote .tag{border:0!important;padding:0!important}
+.mk{display:none!important}
 h1,h2,h3,h4,dt{break-after:avoid}
 a{color:inherit;text-decoration:none}
 .hit,mark{-webkit-print-color-adjust:exact;print-color-adjust:exact}

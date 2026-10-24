@@ -309,10 +309,32 @@ def hud_css(scheme: str) -> str:
     return css
 
 
-def with_back(name: str, data: bytes, slug: str, hud: bool = True) -> bytes:
+# 文書だけを1枚のページとして開いたとき（窓口の ?print=1）に、文の根拠と問いの答えを開いて印刷の画面を出す。
+# iPhone の Safari は、枠（iframe）の文書の印刷を頼んでも画面全体を刷り、一覧やボタンが付いて文書は1ページ目で切れた
+# （2026-10-25 かしぇ「pdf印刷の時　文字以外の余計な要素がついてくる」）。書体が届いてから刷り、
+# 読み込み直しで二度刷らないよう URL から ?print=1 を外す
+PRINT_NOW_JS = ("(function(){function go(){document.querySelectorAll('details.s:not([open]),details.ans:not([open])').forEach(function(d){d.open=true});"
+                "try{history.replaceState(null,'',location.pathname)}catch(x){}setTimeout(function(){window.print()},250)}"
+                "function ready(){(document.fonts&&document.fonts.ready?document.fonts.ready:Promise.resolve()).then(go)}"
+                "if(document.readyState==='complete')ready();else addEventListener('load',ready)})();")
+
+
+def allow_script(text: str, js: str) -> str:
+    """書き出し済みの文書の CSP（meta）に、差し込むスクリプトのハッシュを足す。ほかの許可は変えない"""
+    h = "'sha256-" + base64.b64encode(hashlib.sha256(js.encode()).digest()).decode() + "'"
+    m = re.search(r'(<meta http-equiv="Content-Security-Policy" content=")([^"]*)(")', text)
+    if not m:
+        return text
+    csp = m.group(2)
+    csp = csp.replace("script-src ", f"script-src {h} ", 1) if "script-src " in csp else f"{csp}; script-src {h}"
+    return text[:m.start(2)] + csp + text[m.end(2):]
+
+
+def with_back(name: str, data: bytes, slug: str, hud: bool = True, print_now: bool = False) -> bytes:
     """文書は単体で書き出されていて、ダッシュボードへ戻る導線を持たない。配るときに左下へ戻るボタンを足す。
     map.md・log.md は文字のまま返すとボタンを置けないので、ダッシュボードと同じ胡桃材の地のページに包む。
-    戻り先は相対（../index.html）にして、配る窓口でも束でも同じに動かす"""
+    戻り先は相対（../index.html）にして、配る窓口でも束でも同じに動かす。
+    print_now は、開いたらすぐ印刷の画面を出す（PRINT_NOW_JS）"""
     md = name.endswith(".md")
     # 文書はどれもダッシュボードと同じコルク板の暗い地に置く（skin.py）ので、戻るボタンは暗い地用の象牙色。
     # ダッシュボードの本体の枠（iframe）に出すときは、ヘッダーと一覧が残るので戻るボタンは要らない（hud=False・窓口の ?embed=1）。
@@ -324,9 +346,13 @@ def with_back(name: str, data: bytes, slug: str, hud: bool = True) -> bytes:
         # map.md・log.md は、見出し・箇条書き・表などに組んで象牙の紙に載せる（2026-10-22 かしぇ「mdはちゃんとプレビューするようにしたい」）。
         # 中身は他人が書いた文を含むので、skin.md_html が全部エスケープしてから組む
         body = f'<article class="sheet md">{skin.md_html(text)}</article>{hud}'
-        return skin.page(f"{slug} {name}", body, extra_head=f"<style>{skin.CSS}</style>").encode()
+        return skin.page(f"{slug} {name}", body, extra_head=f"<style>{skin.CSS}</style>",
+                         scripts=(PRINT_NOW_JS,) if print_now else ()).encode()
     # 前に書き出した文書は印刷の見た目（skin.PRINT_CSS）を持たないので、配るときに足す。文書の CSP は style を許している
     hud += f"<style>{skin.PRINT_CSS}</style>"
+    if print_now:
+        text = allow_script(text, PRINT_NOW_JS)
+        hud += f"<script>{PRINT_NOW_JS}</script>"
     i = text.lower().rfind("</body>")
     return (text[:i] + hud + text[i:] if i >= 0 else text + hud).encode()
 
@@ -379,7 +405,8 @@ def make_handler(root: Path, runs: list[dict], token: str):
                 src = docs.get((slug, name))
                 if src is None or not topic_file(src):
                     return self.reply(404, "text/plain; charset=utf-8", "無い".encode())
-                body = with_back(name, src.read_bytes(), slug, hud="embed" not in parse_qs(query))
+                q = parse_qs(query)
+                body = with_back(name, src.read_bytes(), slug, hud="embed" not in q, print_now="print" in q)
                 ctype = "text/html; charset=utf-8"
             extra = {"Set-Cookie": f"imozuru={token}; Path=/; HttpOnly; SameSite=Strict"} if token and given else {}
             self.reply(200, ctype, body, extra)
@@ -1140,6 +1167,14 @@ body.doc.open .docprint,body.doc.dragging .docprint{opacity:0;pointer-events:non
 body.dragging .docprint{transition:none}
 @media (min-width:761px){body.doc .docprint{left:calc(var(--side,18rem) + 74px)}body.doc.collapsed .docprint{left:74px}}
 @media (max-width:760px){.inst-bar{gap:10px;padding:10px 8px 10px 12px}.inst-bar .ic{display:none}}
+/* ダッシュボードの画面ごと刷られたとき（ブラウザの印刷を直接使ったときなど）は、一覧・ボタン・帯・地の質感を刷らない
+   （2026-10-25 かしぇ「pdf印刷の時　文字以外の余計な要素がついてくる」） */
+@media print{
+ html,body,main{background:none!important}
+ .side,header,.tools,.inst-bar,.imz-hud,body.doc .dochud,body.doc .docprint,.ptr,.grip,.shade,.frame,.pager{display:none!important}
+ .layout{display:block!important}
+ body.doc main{height:auto!important;overflow:visible!important;padding:0!important}
+}
 /* 画面の図。スマホの図は紙の幅いっぱいでも 340px まで（PC で大きく出しすぎない）。番号の丸は絵の中の印と同じ紅紫 */
 .guide figure.shot{margin:14px 0 18px}.guide figure.shot img{display:block;width:auto;max-width:min(100%,560px);max-height:560px;height:auto;border-radius:8px;
  box-shadow:0 0 0 1px var(--ivory-line),0 4px 10px -6px color-mix(in oklch,var(--umbra) 60%,transparent)}
@@ -1512,10 +1547,12 @@ fm.addEventListener('submit',function(){if(envf)envf.value=ua;
 // 送る中身はこの後でブラウザが読むので、消すのは次の処理に回す
 setTimeout(function(){fm.reset();fd.classList.add('sent');var c=fd.querySelector('.done .btn');if(c)c.focus()},0)})}
 // 文書を PDF で保存する。枠（iframe）の文書に印刷の見た目を差し込み、文の根拠と問いの答えを開いてから印刷の画面を出し、終わったら閉じ直す。
-// 前に書き出した文書は印刷の見た目を持たないので、ここで足す。ファイルを直接開いたときは枠の中に触れられないので、文書を別のタブで開く
+// 前に書き出した文書は印刷の見た目を持たないので、ここで足す。ファイルを直接開いたときは枠の中に触れられないので、文書を別のタブで開く。
+// iPhone と Safari は枠の文書の印刷を頼んでも画面全体を刷るので、文書だけを1枚のページとして開き、そこで印刷の画面を出す（窓口の ?print=1）
 var pb=document.querySelector('.docprint'),fr=document.querySelector('#docview iframe'),PCSS=@@PRINT_CSS@@;
 if(pb&&fr)pb.addEventListener('click',function(){var w=fr.contentWindow,d=null;try{d=w.document;if(!d.body)d=null}catch(x){d=null}
 if(!d){window.open(fr.src,'_blank','noopener');return}
+if(web&&(ios||plat==='safari')){location.href=w.location.pathname+'?print=1';return}
 if(!d.getElementById('imz-print')){var s=d.createElement('style');s.id='imz-print';s.textContent=PCSS;d.head.appendChild(s)}
 var op=[];d.querySelectorAll('details.s:not([open]),details.ans:not([open])').forEach(function(x){x.open=true;op.push(x)});
 w.addEventListener('afterprint',function(){op.forEach(function(x){x.open=false})},{once:true});
