@@ -113,6 +113,32 @@ details[open]:not(.closing)>summary::before{transform:rotate(90deg)}
 CSS = (CSS.replace("@@VARS@@", SKIN_VARS).replace("@@HEAD@@", HEAD_FONT)
        .replace("@@CORK@@", texture("cork")).replace("@@PAPER@@", texture("paper")))
 
+# 印刷と PDF の見た目（2026-10-25 かしぇ「pdf出力できるといいかも？」）。コルク板と紙の質感・ピン・影は外して白い紙に刷り、
+# 戻るボタンと編の切り替えの札は消す。選んでいる編だけを刷り、その編の名前は読み上げ用の見出しを見せて示す。
+# 引用と問いはページの境目で割らない。ダッシュボードは、前に書き出した文書にも同じものを差し込んでから印刷する
+PRINT_CSS = """
+@media print{
+@page{margin:14mm 12mm}
+html,body{background:none!important}
+main{max-width:none;padding:0}
+.sheet{background:none!important;box-shadow:none!important;border-radius:0;padding:0!important;margin:0 0 9mm}
+.sheet::before,.sheet::after{display:none!important}
+.imz-hud,.tabs,nav,figure.quote>details{display:none!important}
+.lv>h2.sr{position:static;width:auto;height:auto;overflow:visible;clip:auto;white-space:normal;font-size:1.1rem;margin:0 0 .4rem}
+figure.quote,.quiz,dt,ul.claims li,tr{break-inside:avoid}
+h1,h2,h3,h4,dt{break-after:avoid}
+a{color:inherit;text-decoration:none}
+.hit,mark{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+"""
+CSS += PRINT_CSS
+
+# 印刷の直前に、選んでいる編の文の根拠（details.s）と問いの答え（details.ans）を開き、刷り終えたら元に戻す。
+# 紙では押して開けないので、根拠の引用は文のすぐ下に出しておく。原文の前後や検索の全件は閉じたまま（長すぎる）
+PRINT_JS = ("(function(){var opened=[];addEventListener('beforeprint',function(){"
+            "document.querySelectorAll('details.s:not([open]),details.ans:not([open])').forEach(function(d){d.open=true;opened.push(d)})});"
+            "addEventListener('afterprint',function(){opened.forEach(function(d){d.open=false});opened=[]})})();")
+
 
 # --- md を HTML に組む -------------------------------------------------------
 # 中身は他人が書いた文（調べた先の題名・URL を含む）として扱う。先に全部エスケープしてから印を付け、
@@ -294,9 +320,9 @@ FRAME_JS = ("(function(){if(window.parent===window)return;var on=false,mode='',x
 
 def page(title: str, body: str, extra_head: str = "", scripts: tuple[str, ...] = ()) -> str:
     """文書のページの外枠。body は組み終わった HTML（.sheet を並べたもの）。
-    スクリプトは折りたたみの動き（DETAILS_JS）と、渡されたものだけを、中身のハッシュで許して置く"""
+    スクリプトは折りたたみの動き（DETAILS_JS）・印刷の前に根拠を開く（PRINT_JS）と、渡されたものだけを、中身のハッシュで許して置く"""
     import hashlib
-    js = [*scripts, DETAILS_JS, FRAME_JS]
+    js = [*scripts, DETAILS_JS, PRINT_JS, FRAME_JS]
     hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(s.encode()).digest()).decode() + "'" for s in js)
     csp = f"default-src 'none'; {CSP_FONTS}; script-src {hashes}"
     tags = "".join(f"<script>{s}</script>" for s in js)

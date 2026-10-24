@@ -275,10 +275,13 @@ class DashboardTests(unittest.TestCase):
         page = dash.render(list(self.collect().values()), self.root)
         self.assertNotIn("<script>alert", page)
         body = page.split("</head>", 1)[1]
-        self.assertEqual(body.count("<script"), 1)
-        self.assertIn(f"<script>{dash.SIDE_JS}</script>", body)
-        h = base64.b64encode(hashlib.sha256(dash.SIDE_JS.encode()).digest()).decode()
-        self.assertIn(f"script-src 'sha256-{h}'", page)
+        # 動くのは一覧の開閉（SIDE_JS）と、入れる・送る・PDF（FEATURE_JS）の2つだけで、どちらも中身のハッシュで許したもの
+        self.assertEqual(body.count("<script"), 2)
+        hashes = []
+        for js in (dash.SIDE_JS, dash.FEATURE_JS):
+            self.assertIn(f"<script>{js}</script>", body)
+            hashes.append("'sha256-" + base64.b64encode(hashlib.sha256(js.encode()).digest()).decode() + "'")
+        self.assertIn("script-src " + " ".join(hashes) + ";", page)
         self.assertIn("default-src 'none'", page)
 
     def test_explanations_live_on_the_guide_section(self):

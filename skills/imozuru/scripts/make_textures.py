@@ -6,7 +6,8 @@
 描くのにブラウザ（playwright の chromium）を使う。SVG のフィルタの描き方はブラウザに依存するので、毎回同じものでそろえる。
 
 使い方:
-    make_textures.py    … 質感の絵（2倍の解像度・透過）とアイコンを全部描き直す
+    make_textures.py        … 質感の絵（2倍の解像度・透過）とアイコンを全部描き直す
+    make_textures.py icons  … アイコン（ホーム画面・タブ・アプリの 192px と 512px）だけを描き直す
 """
 
 import re
@@ -45,15 +46,19 @@ def icon_html(size: int = ICON_SIZE, pad_ratio: float = ICON_PAD, radius: int = 
 
 def main() -> int:
     from playwright.sync_api import sync_playwright
+    icons_only = sys.argv[1:] == ["icons"]
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        for name, (png, svg, size) in dashboard.TEXTURES.items():
+        for name, (png, svg, size) in ({} if icons_only else dashboard.TEXTURES).items():
             page = browser.new_page(viewport={"width": size, "height": size}, device_scale_factor=2)
             page.set_content(f"<style>html,body{{margin:0;background:transparent}}</style>{svg()}")
             page.screenshot(path=str(png), omit_background=True, clip={"x": 0, "y": 0, "width": size, "height": size})
             print(f"→ {png}（{png.stat().st_size / 1024:.0f} KB）")
+        # アプリとして入れたときのアイコン（192px・512px）は、ホーム画面のアイコンと同じ絵を大きく描く
+        apps = [(png, int(re.search(r"\d+", path).group())) for path, png in dashboard.APP_ICONS.items()]
         for png, size, html_ in ((dashboard.ICON, ICON_SIZE, icon_html()),
-                                 (FAVICON, FAVICON_SIZE, icon_html(FAVICON_SIZE, FAVICON_PAD, FAVICON_RADIUS))):
+                                 (FAVICON, FAVICON_SIZE, icon_html(FAVICON_SIZE, FAVICON_PAD, FAVICON_RADIUS)),
+                                 *[(png, size, icon_html(size)) for png, size in apps]):
             page = browser.new_page(viewport={"width": size, "height": size})
             page.set_content(html_)
             page.screenshot(path=str(png), omit_background=True, clip={"x": 0, "y": 0, "width": size, "height": size})

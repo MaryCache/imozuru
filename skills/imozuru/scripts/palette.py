@@ -95,3 +95,21 @@ def mix(role: str, percent: int) -> str:
 def all_values() -> set[str]:
     """ページに出てよい oklch() の値の全部"""
     return set(SWATCH.values()) | {v for t in THEMES.values() for k, v in t.items() if v.startswith("oklch(")}
+
+
+def hex_of(value: str) -> str:
+    """oklch() の値を #rrggbb にする。CSS の外（アプリの指定の manifest）は oklch を読めないことがあるので、そこだけに使う。
+    変換は OKLab の定義どおり（Ottosson 2020）。sRGB の外の色は端に寄せる"""
+    import math
+    L, C, h = (float(x) for x in value[value.index("(") + 1:value.index(")")].split()[:3])
+    a, b = C * math.cos(math.radians(h)), C * math.sin(math.radians(h))
+    l_, m_, s_ = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3, (L - 0.1055613458 * a - 0.0638541728 * b) ** 3, \
+        (L - 0.0894841775 * a - 1.2914855480 * b) ** 3
+    lin = (4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_,
+           -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_,
+           -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_)
+
+    def gamma(x):
+        x = min(1.0, max(0.0, x))
+        return 12.92 * x if x <= 0.0031308 else 1.055 * x ** (1 / 2.4) - 0.055
+    return "#" + "".join(f"{round(gamma(c) * 255):02x}" for c in lin)

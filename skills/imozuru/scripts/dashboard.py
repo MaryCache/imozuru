@@ -325,6 +325,8 @@ def with_back(name: str, data: bytes, slug: str, hud: bool = True) -> bytes:
         # 中身は他人が書いた文を含むので、skin.md_html が全部エスケープしてから組む
         body = f'<article class="sheet md">{skin.md_html(text)}</article>{hud}'
         return skin.page(f"{slug} {name}", body, extra_head=f"<style>{skin.CSS}</style>").encode()
+    # 前に書き出した文書は印刷の見た目（skin.PRINT_CSS）を持たないので、配るときに足す。文書の CSP は style を許している
+    hud += f"<style>{skin.PRINT_CSS}</style>"
     i = text.lower().rfind("</body>")
     return (text[:i] + hud + text[i:] if i >= 0 else text + hud).encode()
 
@@ -355,6 +357,9 @@ def make_handler(root: Path, runs: list[dict], token: str):
             # 中身はロゴの紋だけで、調査の中身は含まない
             if path in ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png") and ICON.is_file():
                 return self.reply(200, "image/png", ICON.read_bytes())
+            # アプリとして入れたときのアイコンも同じ。ブラウザは入れるときに cookie を付けずに取りに来ることがある
+            if path in APP_ICONS and APP_ICONS[path].is_file():
+                return self.reply(200, "image/png", APP_ICONS[path].read_bytes())
             given = parse_qs(query).get("k", [""])[0]
             cookie = dict(c.strip().split("=", 1) for c in self.headers.get("Cookie", "").split(";") if "=" in c)
             # 非 ASCII の鍵も認証失敗として返し、比較の例外で接続を落とさない（2026-10-22 脆弱性レビュー）
@@ -362,9 +367,11 @@ def make_handler(root: Path, runs: list[dict], token: str):
                                                        s.encode("utf-8", errors="surrogateescape"))
                                  for s in (given, cookie.get("imozuru", ""))):
                 return self.reply(403, "text/plain; charset=utf-8", "合言葉が要る（起動したときに出た URL で開く）".encode())
+            if path == "/manifest.webmanifest":
+                return self.reply(200, "application/manifest+json", json.dumps(manifest(token), ensure_ascii=False).encode())
             topics = collect(root, runs)
             if path in ("/", "/index.html"):
-                body = render(topics, root).encode()
+                body = render(topics, root, served=True).encode()
                 ctype = "text/html; charset=utf-8"
             else:
                 slug, _, name = path.strip("/").partition("/")
@@ -391,6 +398,19 @@ def make_handler(root: Path, runs: list[dict], token: str):
             print(f"{getattr(self, 'command', '-')} {getattr(self, 'path', '').split('?')[0]} → {a[1] if len(a) > 1 else ''}", file=sys.stderr)
 
     return Handler
+
+
+def manifest(token: str) -> dict:
+    """アプリとして入れるための指定（2026-10-25 かしぇ「アプリとしてインストール推奨をもっと押し出したい（ＰＣも）」）。
+    合言葉を持つ相手にだけ返し（窓口の合言葉の確認を通ったあと）、起動の URL に合言葉を入れる。
+    iPhone のホーム画面のアプリは Safari と cookie を分けて持つので、合言葉の無い URL から起動すると開けない。
+    id は合言葉を含まない / にして、合言葉を変えても同じアプリとして扱われるようにする。
+    theme_color は置かない。iPhone で見た目の指定を足したとき、ホーム画面から開くと下に帯が出た（2026-10-22・render の注記）"""
+    bg = palette.hex_of(palette.SWATCH[palette.DASH["side-bg"]])
+    return {"name": "imozuru 調査記録", "short_name": "imozuru", "id": "/", "start_url": f"/?k={token}" if token else "/",
+            "scope": "/", "display": "standalone", "lang": "ja", "background_color": bg,
+            "icons": [{"src": p, "sizes": f"{n}x{n}", "type": "image/png", "purpose": "any"}
+                      for p, n in zip(APP_ICONS, (192, 512)) if APP_ICONS[p].is_file()]}
 
 
 def serve(root: Path, runs: list[dict], port: int) -> int:
@@ -494,6 +514,60 @@ HELP_ICON = ('<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"
              '<circle cx="12" cy="18" r=".6" fill="currentColor"/></svg>')
 
 
+def line_icon(paths: str, size: int = 20) -> str:
+    """ヘルプのボタンと同じ太さの線で描くアイコン"""
+    return (f'<svg viewBox="0 0 24 24" width="{size}" height="{size}" aria-hidden="true" fill="none" stroke="currentColor" '
+            f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{paths}</svg>')
+
+
+# アプリとして入れる（下向きの矢印が受け皿に入る）・感想と要望を送る（吹き出し）・PDF で保存（紙に下向きの矢印）
+INSTALL_ICON = line_icon('<path d="M12 4v10"/><path d="M8 10.5l4 4 4-4"/><path d="M5 15.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2.5"/>')
+FEEDBACK_ICON = line_icon('<path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-7l-4 3.2V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/>'
+                          '<path d="M8 9.5h8M8 12.5h5"/>')
+PRINT_ICON = line_icon('<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M12.5 10.5v6"/><path d="M10 14l2.5 2.5L15 14"/>')
+CLOSE_ICON = line_icon('<path d="M7 7l10 10M17 7L7 17"/>', 18)
+
+# アプリとして入れたときのアイコン（Chrome・Edge は 192px と 512px を求める）。ホーム画面のアイコンと同じ絵で、make_textures.py が作る
+APP_ICONS = {f"/icon-{n}.png": LOGO.with_name(f"icon-{n}.png") for n in (192, 512)}
+
+
+def imozuru_version() -> str:
+    """変更履歴の一番上の版の番号（2.0.0 など）。フィードバックに添えて、どの版の話かを分かるようにする。
+    スキルだけを写して入れた環境には変更履歴が無いので「不明」"""
+    try:
+        text = (LOGO.parents[3] / "CHANGELOG.md").read_text(encoding="utf-8")
+    except OSError:
+        return "不明"
+    m = re.search(r"^## \[(\d+\.\d+\.\d+)\]", text, re.M)
+    return m.group(1) if m else "不明"
+
+
+# 感想・要望を送る先。作者の Google フォームの「事前入力したリンク」を、仮の値（種類=不具合・評価=5・内容=BODY・版=VERSION・環境=ENV）を
+# 入れて取ったもの。項目の番号（entry.N）はこのリンクから読む。空ならボタンを出さない（2026-10-25 かしぇ「フォームに送る」）。
+# 環境変数 IMOZURU_FEEDBACK_FORM で差し替えられ、off で消せる（フォークした人が自分のフォームへ向けるため）
+FEEDBACK_FORM = ""
+FEEDBACK_KINDS = ("不具合", "要望", "感想")
+
+
+def feedback_form() -> dict | None:
+    """事前入力のリンクから、送り先（formResponse）と各項目の番号を取り出す。読めなければ None（ボタンを出さない）"""
+    from urllib.parse import parse_qsl, urlsplit
+    link = os.environ.get("IMOZURU_FEEDBACK_FORM", FEEDBACK_FORM).strip()
+    if not link or link == "off":
+        return None
+    u = urlsplit(link)
+    m = re.fullmatch(r"/forms/d/e/([A-Za-z0-9_-]+)/viewform", u.path)
+    if u.scheme != "https" or u.hostname != "docs.google.com" or not m:
+        return None
+    fields = {"BODY": "body", "VERSION": "version", "ENV": "env", "5": "rating"}
+    out = {"action": f"https://docs.google.com/forms/d/e/{m.group(1)}/formResponse"}
+    for k, v in parse_qsl(u.query):
+        if re.fullmatch(r"entry\.\d+", k):
+            out[fields.get(v, "kind" if v in FEEDBACK_KINDS else "")] = k
+    out.pop("", None)
+    return out if {"kind", "body"} <= out.keys() else None
+
+
 def cork_svg() -> str:
     """コルクの粒を SVG のノイズで作り、地の色に掛け合わせるタイル（design-library knowledge/color/texture.md の「ノイズ＋照明」）。
     光だけで凹凸を出すと、しわの寄った革か紙に見えた。コルクは明るさの違う粒がまだらに詰まり、小さな穴が点々とあるので、
@@ -578,23 +652,25 @@ aside::-webkit-scrollbar{{width:8px}}
 aside::-webkit-scrollbar-track{{background:transparent}}
 aside::-webkit-scrollbar-thumb{{background:{palette.mix("sub", 30)};border-radius:4px;border:2px solid transparent;background-clip:padding-box}}
 aside:hover::-webkit-scrollbar-thumb{{background-color:{palette.mix("sub", 60)}}}
-/* 説明のボタンは画面の右上に固定し、スクロールしても見えるようにする（2026-10-22 かしぇ「スクロールで隠れる位置にあるのよくない」） */
-.help{{position:fixed;z-index:6;top:max(14px,env(safe-area-inset-top,0px));right:max(16px,env(safe-area-inset-right,0px));
-width:40px;height:40px;border-radius:50%;display:grid;place-items:center;text-decoration:none;
+/* 右上のボタンの列（アプリとして入れる・感想と要望を送る・ヘルプ）。列ごと画面の右上に固定し、スクロールしても見えるようにする
+   （2026-10-22 かしぇ「スクロールで隠れる位置にあるのよくない」）。入れる・送るはヘルプの隣に並べる（2026-10-25 かしぇ） */
+.tools{{position:fixed;z-index:6;top:max(14px,env(safe-area-inset-top,0px));right:max(16px,env(safe-area-inset-right,0px));
+display:flex;gap:10px;transition:opacity .2s}}
+.tbtn{{position:relative;flex:none;width:40px;height:40px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;text-decoration:none;cursor:pointer;
 background:var(--ivory);color:var(--ivory-ink);box-shadow:0 0 0 1px var(--ivory-line),0 6px 14px -6px {palette.mix("umbra", 70)};
-transition:transform .15s,opacity .2s}}
-.help:hover{{color:var(--brass-dark)}}
-.help:active{{transform:scale(.94)}}
-.help:focus-visible{{outline:2px solid var(--ivory);outline-offset:3px}}
-body.open .help{{opacity:0;pointer-events:none}}
+transition:transform .15s}}
+.tbtn[hidden]{{display:none}}
+.tbtn:hover{{color:var(--brass-dark)}}
+.tbtn:active{{transform:scale(.94)}}
+.tbtn:focus-visible{{outline:2px solid var(--ivory);outline-offset:3px}}
+body.open .tools{{opacity:0;pointer-events:none}}
 @media (max-width:760px){{.home .card{{padding:18px 14px 14px}}
  /* スマホの本体は中でスクロールする箱。既定では地の模様が箱に貼りついて札だけが滑るので、模様も一緒に動かす（札はコルク板に留めた標本） */
  main{{background-attachment:local}}
  /* スマホでは帯と一緒に右へずらす。画面に残したまま薄くすると、帯から取り残されて見えた（2026-10-22 かしぇ「ヘルプボタンがズレてた」） */
- .help{{top:max(10px,env(safe-area-inset-top,0px));transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1)}}
- body.open .help{{opacity:1}}
- body.dragging .help{{transition:none}}
- .help:active{{transform:translateX(var(--x,0px)) scale(.94)}}}}
+ .tools{{top:max(10px,env(safe-area-inset-top,0px));transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1)}}
+ body.open .tools{{opacity:1}}
+ body.dragging .tools{{transition:none}}}}
 /* 一覧の幅を変えるつまみは、標本箱の蝶番のような真鍮の金具。ねじ頭を2つ打つ */
 @media (min-width:761px){{
  .grip::after{{content:"";position:absolute;top:50%;left:1px;width:10px;height:46px;margin-top:-23px;border-radius:3px;
@@ -998,12 +1074,72 @@ radial-gradient(farthest-side at 100% 0,color-mix(in oklch,var(--umbra) 50%,tran
 .guide code{overflow-wrap:anywhere}
 /* 行き先を data-href へ移したリンクにも、押せる印の指の形を出す */
 a[data-href]{cursor:pointer}
-/* ？のボタンは、パソコンでマウスを乗せると「ヘルプ」の札を下に出す（2026-10-22 かしぇ）。触る画面には乗せる動作が無いので出さない */
-@media (hover:hover){.help::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);right:0;white-space:nowrap;
+/* 右上のボタンは、パソコンでマウスを乗せると名前の札を下に出す（2026-10-22 かしぇ）。触る画面には乗せる動作が無いので出さない */
+@media (hover:hover){.tbtn::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);right:0;white-space:nowrap;
  padding:4px 10px;border-radius:6px;background:var(--side-bg);color:var(--ivory);font:500 12.5px/1.5 var(--head),serif;letter-spacing:.08em;
  box-shadow:0 4px 12px -4px color-mix(in oklch,var(--umbra) 70%,transparent);opacity:0;transform:translateY(-3px);
  transition:opacity .15s,transform .15s;pointer-events:none}
- .help:hover::after,.help:focus-visible::after{opacity:1;transform:none}}
+ .tbtn:hover::after,.tbtn:focus-visible::after{opacity:1;transform:none}}
+/* アプリとして入れる帯。急ぎの知らせではないので、フォーカスは奪わず、見出しつきの区画として画面の下に出す
+   （design-library parts/alert.md「静的に置く枠は見出しを付けて region」）。閉じたら二度と出さない（右上のボタンは残る）。
+   文書を読んでいる間とスマホで一覧を開いている間は、左下のボタンや一覧に重ならないよう出さない */
+.inst-bar{position:fixed;z-index:7;left:max(16px,env(safe-area-inset-left,0px));right:max(16px,env(safe-area-inset-right,0px));
+ bottom:max(16px,env(safe-area-inset-bottom,0px));margin-inline:auto;max-width:34rem;display:flex;align-items:center;gap:12px;
+ padding:12px 10px 12px 14px;border-radius:10px;background:var(--ivory);color:var(--ivory-ink);
+ box-shadow:0 0 0 1px var(--ivory-line),0 16px 32px -14px color-mix(in oklch,var(--umbra) 85%,transparent)}
+.inst-bar[hidden],body.doc .inst-bar,body.open .inst-bar{display:none}
+.inst-bar .ic{flex:none;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--side-bg);color:var(--ivory)}
+.inst-bar .tx{flex:1;min-width:0}
+.inst-bar h2{margin:0;font:600 .95rem/1.5 var(--head),serif;letter-spacing:.04em}
+.inst-bar p{margin:0;font-size:.8rem;line-height:1.55;color:var(--ivory-sub)}
+.inst-bar .x{flex:none;width:36px;height:36px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ivory-sub);cursor:pointer}
+.inst-bar .x:hover{color:var(--ivory-ink)}
+.inst-bar .x:focus-visible{outline:2px solid var(--beni);outline-offset:1px}
+/* 押せる面のボタン。主の操作は胡桃材の地に象牙の字、そのほかは線だけ */
+.btn{flex:none;min-height:40px;padding:0 18px;border-radius:99px;border:1px solid var(--ivory-line);background:transparent;color:var(--ivory-ink);
+ font:600 .92rem/1 var(--head),serif;letter-spacing:.06em;cursor:pointer;transition:transform .15s}
+.btn.pri{background:var(--side-bg);border-color:var(--side-bg);color:var(--ivory)}
+.btn:active{transform:scale(.96)}
+.btn:focus-visible{outline:2px solid var(--beni);outline-offset:2px}
+/* 小窓（感想と要望・アプリとして入れる手順）。標準の dialog を使い、背後を操作できなくする・Esc で閉じる・中でフォーカスを回すのはブラウザに任せる
+   （parts/modal.md の解剖・APG）。見た目は詳細の札と同じ象牙の紙 */
+dialog.dlg{width:min(31rem,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;border:0;border-radius:10px;overflow:auto;overscroll-behavior:contain;
+ background-color:var(--ivory);background-image:@@PAPER@@;color:var(--ivory-ink);
+ box-shadow:0 0 0 1px var(--ivory-line),0 24px 60px -20px color-mix(in oklch,var(--umbra) 90%,transparent)}
+dialog.dlg::backdrop{background:color-mix(in oklch,var(--umbra) 55%,transparent)}
+.dlg .in{position:relative;padding:22px 22px 18px}
+.dlg h2{margin:0 40px 6px 0;font:600 1.15rem/1.5 var(--head),serif;letter-spacing:.05em}
+.dlg .lead{margin:0 0 16px;font-size:.88rem;color:var(--ivory-sub)}
+.dlg .x{position:absolute;top:12px;right:12px;width:40px;height:40px;padding:0;border:0;border-radius:50%;display:grid;place-items:center;background:none;color:var(--ivory-sub);cursor:pointer}
+.dlg .x:hover{color:var(--ivory-ink)}
+.dlg .x:focus-visible{outline:2px solid var(--beni);outline-offset:1px}
+.dlg fieldset{border:0;padding:0;margin:0 0 16px;min-width:0}
+.dlg legend,.dlg .lbl{padding:0;margin-bottom:6px;font:600 .9rem/1.5 var(--head),serif;letter-spacing:.04em}
+.dlg legend small,.dlg .lbl small{font:400 .78rem var(--serif);color:var(--ivory-sub);margin-left:.4em}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chips label{position:relative}
+.chips input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}
+.chips span{display:block;min-width:44px;min-height:36px;padding:6px 14px;text-align:center;border:1px solid var(--ivory-line);border-radius:99px;font-size:.9rem;line-height:1.5}
+.chips input:checked+span{background:var(--side-bg);border-color:var(--side-bg);color:var(--ivory)}
+.chips input:focus-visible+span{outline:2px solid var(--beni);outline-offset:2px}
+.dlg textarea{display:block;width:100%;min-height:8.5rem;resize:vertical;padding:10px 12px;border:1px solid var(--ivory-line);border-radius:8px;
+ background:color-mix(in oklch,var(--glass) 30%,transparent);color:var(--ivory-ink);font:16px/1.7 var(--serif)}
+.dlg textarea:focus-visible{outline:2px solid var(--beni);outline-offset:1px}
+.dlg .what{margin:12px 0 0;font-size:.8rem;line-height:1.6;color:var(--ivory-sub)}
+.dlg .acts{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
+.dlg .done{display:none}
+.dlg.sent form{display:none}
+.dlg.sent .done{display:block}
+.dlg ol.how{margin:0;padding-left:1.4em}
+.dlg ol.how li{margin:.35em 0}
+.dlg [data-plat][hidden]{display:none}
+/* 文書を PDF で保存するボタン。戻るボタンの右に、同じ形で並べる。文書を開いている間だけ出す */
+.docprint{display:none!important;border:0;padding:0;cursor:pointer}
+body.doc .docprint{display:grid!important;left:calc(max(14px,env(safe-area-inset-left,0px)) + 56px);transform:translateX(var(--x,0px));transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .25s}
+body.doc.open .docprint,body.doc.dragging .docprint{opacity:0;pointer-events:none}
+body.dragging .docprint{transition:none}
+@media (min-width:761px){body.doc .docprint{left:calc(var(--side,18rem) + 74px)}body.doc.collapsed .docprint{left:74px}}
+@media (max-width:760px){.inst-bar{gap:10px;padding:10px 8px 10px 12px}.inst-bar .ic{display:none}}
 /* 画面の図。スマホの図は紙の幅いっぱいでも 340px まで（PC で大きく出しすぎない）。番号の丸は絵の中の印と同じ紅紫 */
 .guide figure.shot{margin:14px 0 18px}.guide figure.shot img{display:block;width:auto;max-width:min(100%,560px);max-height:560px;height:auto;border-radius:8px;
  box-shadow:0 0 0 1px var(--ivory-line),0 4px 10px -6px color-mix(in oklch,var(--umbra) 60%,transparent)}
@@ -1146,7 +1282,7 @@ function marks(){document.querySelectorAll('.tablewrap,pre').forEach(function(w)
 marks();addEventListener('resize',marks);addEventListener('hashchange',marks);document.addEventListener('toggle',marks,true);
 function pdown(e){if(!m.matches||e.button>0)return;
 // リンクの上から始めた操作も受ける（開いた一覧の項目の上から閉じられるように）。ドラッグの直後のクリックは下で止める
-if(e.target.closest&&e.target.closest('header .menu,summary,input,.pager,.find'))return;
+if(e.target.closest&&e.target.closest('header .menu,summary,input,.pager,.find,dialog,.inst-bar,.tools'))return;
 // 横にスクロールできる表の上で始めた操作は、表のスクロールに譲る
 if(wide(e.target))return;
 var open=b.classList.contains('open');if(!open&&(e.clientX<EDGE||e.clientX>innerWidth-EDGE))return;
@@ -1334,6 +1470,58 @@ if(window.ResizeObserver)new ResizeObserver(function(){var k=current()||(pages[p
 if(document.fonts&&document.fonts.ready)document.fonts.ready.then(function(){paginate(current()||(pages[pi]||[])[0])});
 })();"""
 
+# アプリとして入れる・感想と要望を送る・文書を PDF で保存する（2026-10-25 かしぇ）。SIDE_JS とは別に置き、同じくハッシュで許す
+FEATURE_JS = r"""(function(){var b=document.body,RM=matchMedia('(prefers-reduced-motion:reduce)');
+// 出る・消えるの動き（design-library animations/modal-family.md: 開くは下から 16px・0.97 倍から約 0.3 秒で減速、閉じるは 0.2 秒で加速して去る。
+// 開くのと同じ長さで閉じると、操作のあとに待たされる）
+function rise(el,out,done){if(RM.matches||!el.animate){if(done)done();return}
+var a=el.animate(out?[{opacity:1,transform:'none'},{opacity:0,transform:'translateY(10px)'}]:[{opacity:0,transform:'translateY(16px) scale(.97)'},{opacity:1,transform:'none'}],
+{duration:out?200:300,easing:out?'cubic-bezier(.55,0,1,.45)':'cubic-bezier(.2,.8,.2,1)'});if(done)a.onfinish=done}
+// 小窓は標準の dialog。閉じたらフォーカスを開いたボタンへ戻す（parts/modal.md・APG）
+function openD(d){d._from=document.activeElement;d.showModal();rise(d,false)}
+function closeD(d){if(d.open&&!d._closing){d._closing=true;rise(d,true,function(){d._closing=false;d.close()})}}
+document.querySelectorAll('dialog.dlg').forEach(function(d){
+d.addEventListener('cancel',function(e){e.preventDefault();closeD(d)});
+d.addEventListener('close',function(){var f=d._from;d._from=null;if(f&&f.focus)f.focus()});
+// 紙の外の暗い幕を押したときも閉じる。紙の中を押したときは閉じない
+d.addEventListener('click',function(e){if(e.target!==d)return;var r=d.getBoundingClientRect();
+if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeD(d)});
+d.querySelectorAll('[data-close]').forEach(function(x){x.addEventListener('click',function(){closeD(d)})})});
+// アプリとして入れる。窓口（http・https）で開いていて、まだアプリとして開いていないときだけ出す。ファイルを直接開いたページは入れられない
+var ib=document.getElementById('inst'),bar=document.getElementById('inst-bar'),idl=document.getElementById('inst-dlg'),K='imozuru-install',ev=null,
+web=/^https?:$/.test(location.protocol),ua=navigator.userAgent,ios=/iPhone|iPad|iPod/.test(ua)||(/Macintosh/.test(ua)&&navigator.maxTouchPoints>1),
+plat=ios?'ios':/Android/.test(ua)?'android':/Firefox\//.test(ua)?'firefox':(/Safari\//.test(ua)&&!/Chrome\/|Chromium|Edg\//.test(ua))?'safari':'chromium';
+function gone(){ib.hidden=true;bar.hidden=true}
+if(!web||b.classList.contains('app'))gone();
+else{ib.hidden=false;idl.querySelectorAll('[data-plat]').forEach(function(p){p.hidden=p.getAttribute('data-plat')!==plat});
+var seen=null;try{seen=localStorage.getItem(K)}catch(x){}
+if(!seen)setTimeout(function(){bar.hidden=false;rise(bar,false)},1200)}
+// Chrome と Edge は、入れられる条件がそろうと beforeinstallprompt を出す（ページを押して 30 秒ほど見たあと・web.dev の install-criteria）。
+// 届いていればブラウザの入れる画面を出し、届く前に押されたら、ブラウザごとの手順の小窓を出す
+addEventListener('beforeinstallprompt',function(e){e.preventDefault();ev=e});
+addEventListener('appinstalled',function(){gone();try{localStorage.setItem(K,'installed')}catch(x){}});
+function install(){if(!ev){openD(idl);return}var e=ev;ev=null;e.prompt();e.userChoice.then(function(c){if(c.outcome==='accepted')gone()})}
+ib.addEventListener('click',install);bar.querySelector('.go').addEventListener('click',install);
+bar.querySelector('.x').addEventListener('click',function(){try{localStorage.setItem(K,'closed')}catch(x){}rise(bar,true,function(){bar.hidden=true})});
+// 感想・要望を送る。送り先は作者の Google フォームで、送ると受付の画面が別のタブに開く。
+// 送るのは書いた内容・版・ブラウザの名乗りだけ。ページの URL（合言葉を含む）と調査の題は入れない
+var fb=document.getElementById('fb'),fd=document.getElementById('fb-dlg');
+if(fb&&fd){var fm=fd.querySelector('form'),envf=fm.querySelector('[data-env]');
+fb.addEventListener('click',function(){fd.classList.remove('sent');openD(fd)});
+fm.addEventListener('submit',function(){if(envf)envf.value=ua;
+// 送る中身はこの後でブラウザが読むので、消すのは次の処理に回す
+setTimeout(function(){fm.reset();fd.classList.add('sent');var c=fd.querySelector('.done .btn');if(c)c.focus()},0)})}
+// 文書を PDF で保存する。枠（iframe）の文書に印刷の見た目を差し込み、文の根拠と問いの答えを開いてから印刷の画面を出し、終わったら閉じ直す。
+// 前に書き出した文書は印刷の見た目を持たないので、ここで足す。ファイルを直接開いたときは枠の中に触れられないので、文書を別のタブで開く
+var pb=document.querySelector('.docprint'),fr=document.querySelector('#docview iframe'),PCSS=@@PRINT_CSS@@;
+if(pb&&fr)pb.addEventListener('click',function(){var w=fr.contentWindow,d=null;try{d=w.document;if(!d.body)d=null}catch(x){d=null}
+if(!d){window.open(fr.src,'_blank','noopener');return}
+if(!d.getElementById('imz-print')){var s=d.createElement('style');s.id='imz-print';s.textContent=PCSS;d.head.appendChild(s)}
+var op=[];d.querySelectorAll('details.s:not([open]),details.ans:not([open])').forEach(function(x){x.open=true;op.push(x)});
+w.addEventListener('afterprint',function(){op.forEach(function(x){x.open=false})},{once:true});
+w.focus();w.print()});
+})();""".replace("@@PRINT_CSS@@", json.dumps(skin.PRINT_CSS))
+
 
 def bars(rows: list[tuple[str, int]], cls: str = "", head: str = "", unit: str = "", colors: dict | None = None) -> str:
     """横棒。共通の目盛り（最大値を全幅）で、値は棒の横に数字でも出す。
@@ -1422,17 +1610,19 @@ def topic_html(t: dict) -> str:
 # 画面名は、名前だけで何の画面かが分かる語にする（同「画面名は　自己紹介でなくてはならない」で紙面→トピック詳細）。
 # 部品は CSS のセレクタで、{dev} は端末（sp・pc）、{t} は撮るトピック詳細に置き換える
 GUIDE_SCREENS = [
-    ("home", "ホーム", [(".help", "1", "ヘルプを表示", ""),
-                       (".card.tally", "2", "全トピックの集計。下方に終了理由・原文の取得元・周回数の内訳が続きます", ""),
+    ("home", "ホーム", [(".inst", "1", "アプリとして入れる。配信した画面（--serve）で開いたときに表示します", ""),
+                       (".fb", "2", "作者へ感想・要望を送る。送り先のフォームがあるときに表示します", ""), (".help", "3", "ヘルプを表示", ""),
+                       (".card.tally", "4", "全トピックの集計。下方に終了理由・原文の取得元・周回数の内訳が続きます", ""),
                        (".menu", "A", "サイドバーを表示", "sp")]),
-    ("side", "サイドバー", [(".home-link", "3", "ロゴ。押すとホームへ移動します", ""), (".find", "4", "検索欄", ""),
-                           (".pager.{dev}", "5", "ページ送り", ""),
-                           ("aside li:first-child a", "6", "トピック1件。題名と日付。左端の色は終了理由の分類", ""),
+    ("side", "サイドバー", [(".home-link", "5", "ロゴ。押すとホームへ移動します", ""), (".find", "6", "検索欄", ""),
+                           (".pager.{dev}", "7", "ページ送り", ""),
+                           ("aside li:first-child a", "8", "トピック1件。題名と日付。左端の色は終了理由の分類", ""),
                            (".menu", "B", "サイドバーを閉じる", "sp"),
                            (".grip", "A", "サイドバーの幅を調整するつまみ。押すと折り畳みます", "pc")]),
-    ("topic", "トピック詳細", [("{t} dl.facts", "7", "トピックの記録", ""), ("{t} .docs", "8", "文書。選択すると、この枠内に表示します", ""),
-                      ("{t} ul.claims", "9", "調査の論点と、原文の有無を示す印", "")]),
-    ("doc", "文書閲覧", [(".docview iframe", "10", "表示中の文書", ""), (".dochud", "11", "トピック詳細へ戻る", "")]),
+    ("topic", "トピック詳細", [("{t} dl.facts", "9", "トピックの記録", ""), ("{t} .docs", "10", "文書。選択すると、この枠内に表示します", ""),
+                      ("{t} ul.claims", "11", "調査の論点と、原文の有無を示す印", "")]),
+    ("doc", "文書閲覧", [(".docview iframe", "12", "表示中の文書", ""), (".dochud", "13", "トピック詳細へ戻る", ""),
+                     (".docprint", "14", "この文書を PDF で保存（印刷）", "")]),
 ]
 
 
@@ -1534,11 +1724,17 @@ def guide_html(topics: list[dict]) -> str:
               "<li>文書はトピック詳細の枠内に表示されます。左下のボタンでトピック詳細へ戻ります</li>")
     ops_pc = ("<li>サイドバー右端のつまみをドラッグすると幅を調整でき、押すと折り畳みます</li>"
               "<li>サイドバーのページは、サイドバー下端のボタンか、サイドバーの上でのホイール操作で送ります。番号を押すと直接入力できます</li>"
-              "<li>サイドバー上部のロゴを押すと、ホームへ移動します</li>")
+              "<li>サイドバー上部のロゴを押すと、ホームへ移動します</li>"
+              "<li>配信した画面（<code>--serve</code>）を Chrome か Edge で開くと、右上の入れるボタンでアプリとして入れられます。タスクバーやスタートメニューから、ブラウザを開かずに起動できます</li>")
+    # 両方の端末に共通の操作（2026-10-25 かしぇ「pdf出力」「フィードバック、レビュー送るモーダル」）
+    ops_both = ("<li>文書の表示中は、左下の2つ目のボタンで、その文書を PDF で保存（印刷）できます。根拠の引用は開いた状態で印刷されます</li>"
+                + ("<li>右上の吹き出しのボタンから、作者へ感想・要望を送れます。送るのは書いた内容と版・ブラウザの種類だけです</li>" if feedback_form() else ""))
+    ops_sp += ops_both
+    ops_pc += ops_both
     phone = ("<ol><li>PC で <code>dashboard.py --serve</code> を実行します。合言葉付きの URL が表示されます</li>"
              "<li>PC とスマホに Tailscale（自分の機器同士だけを接続する VPN）を導入して同じアカウントで接続し、PC で <code>tailscale serve --bg 8765</code> を実行します</li>"
              "<li>スマホで <code>https://&lt;PC の名前&gt;.&lt;tailnet&gt;.ts.net/?k=&lt;合言葉&gt;</code> を開きます</li>"
-             "<li>Safari の共有メニューから「ホーム画面に追加」すると、ロゴのアイコンから起動できます</li></ol>"
+             "<li>右上の入れるボタン（下向きの矢印）を押し、表示された手順でホーム画面に追加すると、ロゴのアイコンから起動できます</li></ol>"
              "<p>配信用の窓口は PC 内部（127.0.0.1）でのみ待ち受け、Tailscale が自分の機器にだけ中継します。"
              "合言葉は <code>IMOZURU_SERVE_TOKEN</code> で固定できます。固定しないと起動ごとに変化し、ホーム画面のアイコンから開けなくなります。</p>")
     claims = '<ul class="claims">' + "".join(f"<li>{status_chip(st)}<span>{esc(text)}</span></li>" for st, text in (
@@ -1631,7 +1827,53 @@ def pager_html(kind: str) -> str:
             f'{sep}<button type="button" data-step="1" aria-label="次のページ">{chevron(nxt)}</button></nav>')
 
 
-def render(topics: list[dict], root: Path) -> str:
+def install_html() -> str:
+    """アプリとして入れる帯と、入れ方の手順の小窓。どちらもスクリプトが窓口で開いたときだけ出す（hidden で書いておく）。
+    手順はブラウザごとに書き、スクリプトが見ている端末の組だけを残す。Chrome と Edge の項目の名前は版で変わるので、名前は書きすぎない"""
+    steps = {
+        "ios": "<ol class=\"how\"><li>Safari の共有ボタン（四角から上向きの矢印）を押します</li><li>「ホーム画面に追加」を選び、「追加」を押します</li></ol>",
+        "android": "<ol class=\"how\"><li>Chrome の右上のメニュー（︙）を押します</li><li>「アプリをインストール」か「ホーム画面に追加」を選びます</li></ol>",
+        "chromium": ("<ol class=\"how\"><li>アドレスバーの右端にあるインストールのアイコンを押すか、ブラウザのメニューからアプリのインストールの項目を選びます</li>"
+                     "<li>見当たらない場合は、30秒ほどこの画面を操作してから、もう一度右上の入れるボタンを押します</li></ol>"),
+        "safari": "<ol class=\"how\"><li>メニューバーの「ファイル」を開きます</li><li>「Dock に追加」を選びます</li></ol>",
+        "firefox": "<p>Firefox はアプリとしての追加に対応していません。Chrome か Edge でこの画面を開くと入れられます。</p>",
+    }
+    plats = "".join(f'<div data-plat="{k}">{v}</div>' for k, v in steps.items())
+    return (f'<section class="inst-bar" id="inst-bar" aria-labelledby="inst-h" hidden><span class="ic">{INSTALL_ICON}</span>'
+            '<div class="tx"><h2 id="inst-h">アプリとして入れる</h2><p>アイコンから、ブラウザを開かずに開けます</p></div>'
+            f'<button class="btn pri go" type="button">入れる</button><button class="x" type="button" aria-label="この案内を閉じる">{CLOSE_ICON}</button></section>'
+            '<dialog class="dlg" id="inst-dlg" aria-labelledby="inst-dh"><div class="in"><h2 id="inst-dh">アプリとして入れる</h2>'
+            '<p class="lead">入れると、ホーム画面やタスクバーのアイコンから、この調査記録をすぐに開けます。合言葉の入力は要りません。</p>'
+            f'{plats}<div class="acts"><button class="btn" type="button" data-close>閉じる</button></div>'
+            f'<button class="x" type="button" aria-label="閉じる" data-close>{CLOSE_ICON}</button></div></dialog>')
+
+
+def feedback_html(form: dict) -> str:
+    """感想・要望を送る小窓。フォームの送り先へ別のタブで直接送る（このページの CSP の form-action で、送り先をそのフォームだけに絞る）。
+    送るものを小窓の中に書いておく。調査の題や中身、ページの URL は送らない"""
+    kinds = "".join(f'<label><input type="radio" name="{form["kind"]}" value="{k}" required><span>{k}</span></label>' for k in FEEDBACK_KINDS)
+    rating = ("<fieldset><legend>評価<small>任意・5 が最高</small></legend><div class=\"chips\">"
+              + "".join(f'<label><input type="radio" name="{form["rating"]}" value="{n}"><span>{n}</span></label>' for n in range(1, 6))
+              + "</div></fieldset>") if "rating" in form else ""
+    version = imozuru_version()
+    hidden = (f'<input type="hidden" name="{form["version"]}" value="{esc(version)}">' if "version" in form else "") + \
+             (f'<input type="hidden" name="{form["env"]}" value="" data-env>' if "env" in form else "")
+    return ('<dialog class="dlg" id="fb-dlg" aria-labelledby="fb-h"><div class="in"><h2 id="fb-h">感想・要望を送る</h2>'
+            '<p class="lead">imozuru の作者に届きます。不具合の報告、ほしい機能、使ってみた感想をお寄せください。</p>'
+            f'<form method="post" action="{esc(form["action"])}" target="_blank" rel="noopener noreferrer">'
+            f'<fieldset><legend>種類</legend><div class="chips">{kinds}</div></fieldset>{rating}'
+            '<label class="lbl" for="fb-body">内容</label><textarea id="fb-body" name="' + form["body"] + '" required maxlength="4000"></textarea>'
+            f'{hidden}<p class="what">送るのは、ここに書いた内容と、imozuru の版（{esc(version)}）・ブラウザの種類だけです。調査の題や中身は送りません。'
+            '送ると、Google フォームの受付画面が別のタブで開きます。</p>'
+            '<div class="acts"><button class="btn" type="button" data-close>取消</button><button class="btn pri" type="submit">送る</button></div></form>'
+            '<div class="done" role="status"><p>受付の画面を別のタブで開きました。そこに「回答を記録しました」と出ていれば届いています。ありがとうございます。</p>'
+            '<div class="acts"><button class="btn pri" type="button" data-close>閉じる</button></div></div>'
+            f'<button class="x" type="button" aria-label="閉じる" data-close>{CLOSE_ICON}</button></div></dialog>')
+
+
+def render(topics: list[dict], root: Path, served: bool = False) -> str:
+    """served は窓口（--serve）から返すとき。アプリとして入れる指定（manifest）を付ける。ファイルに書き出すページは入れられないので付けない"""
+    form = feedback_form()
     try:
         logo = (LOGO_LIGHT if LOGO_LIGHT.is_file() else LOGO).read_text(encoding="utf-8")
         logo = logo.replace("<svg ", '<svg role="img" aria-label="imozuru" ', 1)
@@ -1650,10 +1892,16 @@ def render(topics: list[dict], root: Path) -> str:
                       f'body.js .layout:has(#t-{t["slug"]}.on) aside a[data-href="#t-{t["slug"]}"]'
                       "{background:color-mix(in oklch,var(--glass) 9%,transparent)}" for t in topics if SLUG.fullmatch(t["slug"]))
     body = [f'<header><button class="menu" type="button" aria-controls="side" aria-expanded="false" aria-label="サイドバー"><span></span></button>'
-            f'{pager_html("sp")}</header>', f'<a class="help" href="#guide" aria-label="ヘルプ" data-tip="ヘルプ">{HELP_ICON}</a>',
+            f'{pager_html("sp")}</header>',
+            # 右上のボタンの列。入れるボタンはスクリプトが窓口で開いたときだけ出す。送るボタンは送り先のフォームがあるときだけ置く
+            '<div class="tools">'
+            f'<button class="tbtn inst" id="inst" type="button" hidden aria-haspopup="dialog" aria-label="アプリとして入れる" data-tip="アプリとして入れる">{INSTALL_ICON}</button>'
+            + (f'<button class="tbtn fb" id="fb" type="button" aria-haspopup="dialog" aria-label="感想・要望を送る" data-tip="感想・要望を送る">{FEEDBACK_ICON}</button>' if form else "")
+            + f'<a class="tbtn help" href="#guide" aria-label="ヘルプ" data-tip="ヘルプ">{HELP_ICON}</a></div>',
             # 文書を本体の枠に開いているときだけ出す戻るボタン。行き先（その文書の調査の札）はスクリプトが入れる
             # （2026-10-22 かしぇ「戻るHUDは要るね　そのレポートの所属する項目に戻りたい時が絶対ある」）
-            f'<a class="imz-hud dochud" href="#" aria-label="このトピックの記録へ戻る">{HUD_ICON}</a>', PTR_ICON,
+            f'<a class="imz-hud dochud" href="#" aria-label="このトピックの記録へ戻る">{HUD_ICON}</a>',
+            f'<button class="imz-hud docprint" type="button" aria-label="この文書を PDF で保存（印刷）">{PRINT_ICON}</button>', PTR_ICON,
             '<div class="layout">',
             # ロゴの帯と一覧は .side-in で包む。スマホで開閉するとき、中身を1つの塊として奥へ下げ・手前へ出す
             f'<div class="side" id="side"><div class="side-in"><div class="brand"><a class="home-link" href="#" aria-label="ホームへ">{logo}</a>{FIND_HTML}</div>'
@@ -1663,21 +1911,30 @@ def render(topics: list[dict], root: Path) -> str:
             '<main><div class="view">', home_html(topics), *[topic_html(t) for t in topics],
             f'<section class="topic guide" id="guide">{guide_html(topics)}</section>',
             '<section class="docview" id="docview" aria-label="文書"><iframe title="文書"></iframe></section>',
-            "</div></main></div>"]
+            "</div></main></div>", install_html(), feedback_html(form) if form else ""]
     # スクリプトは中身のハッシュで許可する。'unsafe-inline' にすると、調査の記録から紛れ込んだ文字列も動きうる
-    script_hash = base64.b64encode(hashlib.sha256(SIDE_JS.encode()).digest()).decode()
+    hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(js.encode()).digest()).decode() + "'" for js in (SIDE_JS, FEATURE_JS))
+    # フォームの送り先は感想のフォームだけに絞る（form-action は default-src を引き継がないので、書かないと全部の宛先へ送れる）。
+    # アプリとして入れる指定は窓口のときだけ読む
+    csp = (f"default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; "
+           f"frame-src 'self' file:; script-src {hashes}; form-action {'https://docs.google.com' if form else chr(39) + 'none' + chr(39)}"
+           + ("; manifest-src 'self'" if served else ""))
     # ホーム画面のアイコン。画面の高さの数え方を変える apple-mobile-web-app-* の指定とは別物で、見た目の大きさには触れない
     # （apple-mobile-web-app-capable などを足したら、ホーム画面から開いたとき下に帯が出た・2026-10-22）
     icon_link = '<link rel="apple-touch-icon" href="apple-touch-icon.png">' if ICON.is_file() else ""
+    # アプリの指定は合言葉を持つ相手にだけ返すので、cookie を付けて取りに行かせる（use-credentials）
+    if served:
+        icon_link += '<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">'
     return f"""<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; frame-src 'self' file:; script-src 'sha256-{script_hash}'">
+<meta http-equiv="Content-Security-Policy" content="{csp}">
 <title>imozuru 調査記録</title>{skin.HEAD_META}{icon_link}
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500&family=Noto+Serif+JP:wght@400;600&family={THEME["font"]}&display=swap">
 <style>{CSS}{hud_css("dark")}:root{{--bar:{THEME["bar"]};--src:{THEME["src"]};--r1:{THEME["r1"]};--r2:{THEME["r2"]};--r3:{THEME["r3"]};--r4:{THEME["r4"]};--p-r1:{THEME["p-r1"]};--p-r2:{THEME["p-r2"]};--p-r3:{THEME["p-r3"]};--p-r4:{THEME["p-r4"]};--p-bar:{THEME["p-bar"]};--p-src:{THEME["p-src"]};--head:{THEME["head"]},"Hiragino Mincho ProN","Yu Mincho",serif}}{current}</style></head>
 <body>
 {chr(10).join(body)}
 <script>{SIDE_JS}</script>
+<script>{FEATURE_JS}</script>
 </body></html>
 """
 

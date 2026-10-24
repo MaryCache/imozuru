@@ -166,6 +166,7 @@ The home view summarises why each investigation stopped, where the sources came 
 Choosing a topic in the sidebar opens its details: research points, rounds, sources, and documents; the detailed report and the extract page open inside the same view.
 The sidebar search covers titles, questions, terms, people, and venues, and also matches hiragana and romaji.
 The "?" button at the top right opens the help, which explains each part of the screen.
+While a document is open, the button at the bottom left saves it as a PDF, and the speech-bubble button at the top right sends feedback to the author.
 The dashboard's labels are in Japanese.
 
 ### On a phone
@@ -182,6 +183,10 @@ From the phone, relay it to your own devices with Tailscale and open `https://<p
 `<tailnet>` is the network name shown in the Tailscale admin console.
 The environment variable `IMOZURU_SERVE_TOKEN` fixes the passphrase (16 characters or more).
 Without it, the passphrase changes on every start, and an icon added to the home screen stops opening the page.
+
+The served page can be installed as an app, on a phone and in Chrome or Edge on a PC.
+The install button at the top right opens the browser's install prompt, or shows the steps for that browser.
+The installed app opens without typing the passphrase.
 
 ## Design
 

@@ -127,6 +127,10 @@ def shoot(page, path: Path, marks: list[tuple[str, str]], clip: tuple[int, int, 
 
 def main() -> int:
     from playwright.sync_api import sync_playwright
+    import os
+    # 入れるボタンと送るボタンは条件つきで出る部品（窓口で開いたとき・送り先のフォームがあるとき）。図には写したいので、撮るときだけ出す。
+    # 送り先は例の値で、送りはしない
+    os.environ["IMOZURU_FEEDBACK_FORM"] = "https://docs.google.com/forms/d/e/EXAMPLE/viewform?entry.1=不具合&entry.2=BODY"
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "research"
         root.mkdir()
@@ -157,6 +161,7 @@ def main() -> int:
                     pg = browser.new_page(viewport={"width": size[0], "height": size[1]}, device_scale_factor=2)
                     pg.goto(url + hash_)
                     pg.wait_for_timeout(1400)  # 書体と枠の中の文書の読み込み、出てくる動きの終わりを待つ
+                    pg.evaluate("document.getElementById('inst').hidden=false")
                     if open_side:
                         pg.click(".menu")
                         pg.wait_for_timeout(900)
