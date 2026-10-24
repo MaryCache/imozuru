@@ -572,7 +572,8 @@ def imozuru_version() -> str:
 # 感想・要望を送る先。作者の Google フォームの「事前入力したリンク」を、仮の値（種類=不具合・評価=5・内容=BODY・版=VERSION・環境=ENV）を
 # 入れて取ったもの。項目の番号（entry.N）はこのリンクから読む。空ならボタンを出さない（2026-10-25 かしぇ「フォームに送る」）。
 # 環境変数 IMOZURU_FEEDBACK_FORM で差し替えられ、off で消せる（フォークした人が自分のフォームへ向けるため）
-FEEDBACK_FORM = ""
+FEEDBACK_FORM = ("https://docs.google.com/forms/d/e/1FAIpQLScmjsJ363aHtpUVy6-cDxQ_OnwAcQE0hp7CjigMFG57c-OjJA/viewform?usp=pp_url"
+                 "&entry.1218111923=%E4%B8%8D%E5%85%B7%E5%90%88&entry.860970375=5&entry.1447275214=BODY&entry.1226542421=VERSION&entry.1935341889=ENV")
 FEEDBACK_KINDS = ("不具合", "要望", "感想")
 
 
@@ -1146,8 +1147,15 @@ dialog.dlg::backdrop{background:color-mix(in oklch,var(--umbra) 55%,transparent)
 .chips{display:flex;flex-wrap:wrap;gap:8px}
 .chips label{position:relative}
 .chips input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}
-.chips span{display:block;min-width:44px;min-height:36px;padding:6px 14px;text-align:center;border:1px solid var(--ivory-line);border-radius:99px;font-size:.9rem;line-height:1.5}
+.chips span{display:block;min-width:44px;min-height:36px;padding:6px 14px;text-align:center;border:1px solid var(--ivory-line);border-radius:99px;font-size:.9rem;line-height:1.5;
+ transition:background-color .15s,border-color .15s,color .15s,transform .12s}
 .chips input:checked+span{background:var(--side-bg);border-color:var(--side-bg);color:var(--ivory)}
+/* iPhone は押した要素の箱に半透明の黒を一瞬かぶせる。札の上に重ねた四角い入力欄にそれが出て、丸い札に黒い四角が見えた
+   （2026-10-25 かしぇ「種類　評価選択するときのアニメの挙動がなんか変（黒いシカクが一瞬出る）」）。
+   小窓と帯の中ではそれを消し、押した反応は札が少し縮む動きで出す */
+dialog.dlg *,.inst-bar *{-webkit-tap-highlight-color:transparent}
+.chips input:active+span{transform:scale(.95)}
+@media (prefers-reduced-motion:reduce){.chips span{transition:none}.chips input:active+span{transform:none}}
 .chips input:focus-visible+span{outline:2px solid var(--beni);outline-offset:2px}
 .dlg textarea{display:block;width:100%;min-height:8.5rem;resize:vertical;padding:10px 12px;border:1px solid var(--ivory-line);border-radius:8px;
  background:color-mix(in oklch,var(--glass) 30%,transparent);color:var(--ivory-ink);font:16px/1.7 var(--serif)}
