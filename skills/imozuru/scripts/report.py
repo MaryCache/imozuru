@@ -16,18 +16,22 @@ extracting＝抜き書き。論点ごとに原文をそのまま切り出して�
 extracts.json の形（例はリポジトリの examples/demo/extracts.json）:
     {"title", "question", "stopped",
      "claims": [{"claim", "status": "根拠あり|一部のみ|根拠なし", "note"?,
-                 "quotes": [{"file", "line", "end"?, "text", "ja"?, "mark"?, "context_note"?}]}],
+                 "quotes": [{"file", "line", "end"?, "text", "ja"?, "mark"?, "context_note"?, "url"?}]}],
      "disagreements"?: [{"topic", "quotes": [{..., "who"}]}],
      "unreached"?: ["..."]}
+引用の元のページへのリンクは "url" か、無ければ map.md の「原文（sources/）」の表の「元の URL」から付ける。
 """
 
+import fnmatch
 import html
 import json
 import os
 import re
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path, PureWindowsPath
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import skin  # noqa: E402  見た目（コルク板と象牙の紙）と色は skin.py・palette.py の1か所に置く
@@ -93,6 +97,118 @@ def esc(s: str) -> str:
     return html.escape(s, quote=True)
 
 
+# 引用に、元のページへのリンクを付ける（#16・2026-10-25）。元の URL は map.md の「原文（sources/）」の表の「元の URL」の列にある。
+# 「ファイル」の列は1つの名前とは限らない。手元の 46 件の調査の map.md には、読点・カンマ・中黒・全角の「／」で並べた行、
+# PDF とその文字起こしを a.pdf/.txt や a.pdf / .txt（a.pdf と a.txt の2本）と1つの表記で書いた行、（未読）のような注記、
+# sources/ 付き、ワイルドカード（ms-learn-*.md）、ファイル名そのものに入った半角の丸括弧（-r）があった
+SOURCE_URL = re.compile(r"https?://[^\s\"'<>|`（）「」、。]+")
+NAME_SEP = re.compile(r"[、,，・／]+|\s+")
+EXT_ALT = re.compile(r"^(.+?)\.(\w+)((?:/\.\w+)+)$")
+
+
+def link_url(url) -> str:
+    """リンクにしてよい URL だけを返す。http(s) で、ホストがあり、空白・引用符・<> を含まないもの。javascript: などは捨てる"""
+    if not isinstance(url, str) or not re.fullmatch(r"https?://[^\s\"'<>]+", url):
+        return ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    return url if parts.scheme in ("http", "https") and parts.netloc else ""
+
+
+def file_groups(cell: str) -> list[list[str]]:
+    """「ファイル」の列の1行を、元の URL と組にする単位（並べた1つ1つ）ごとのファイル名の並びにする。
+    a.pdf/.txt は1つの単位で a.pdf と a.txt の2本。/ を含む名前は、下のフォルダの名前かもしれないので全体も残す"""
+    s = cell.replace("`", "")
+    # 全角の括弧は注記（未読 など）。半角の丸括弧はファイル名に入ることがあるので外さない
+    s = re.sub(r"（[^）]*）", " ", s)
+    s = re.sub(r"(?<![\w.-])sources/", "", s)
+    # 拡張子だけが続く書き方（a.pdf/.txt・a.pdf / .txt・a.pdf・.txt）は、どれも同じ名前の別の拡張子
+    s = re.sub(r"\s*[/・、,，]\s*(?=\.\w+(?![\w.]))", "/", s)
+    groups = []
+    for token in NAME_SEP.split(s):
+        m = EXT_ALT.match(token)
+        if m:
+            names = [f"{m.group(1)}.{m.group(2)}"] + [m.group(1) + e for e in re.findall(r"/(\.\w+)", m.group(3))]
+        else:
+            names = [token] + (token.split("/") if "/" in token else [])
+        names = [n for n in names if re.search(r"\.\w+$", n)]
+        if names:
+            groups.append(names)
+    return groups
+
+
+def cell_urls(cell: str) -> list[str]:
+    urls = []
+    for u in SOURCE_URL.findall(cell):
+        u = u.rstrip(".,;:")
+        while u.endswith(")") and u.count(")") > u.count("("):
+            u = u[:-1]
+        if link_url(u):
+            urls.append(u)
+    return urls
+
+
+@lru_cache(maxsize=64)
+def _source_rows(map_path: str, _mtime: int) -> tuple:
+    try:
+        text = Path(map_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ()
+    rows = []
+    for head in re.finditer(r"^\|[^\n]*\|[ \t]*$", text, re.M):
+        cols = [c.strip() for c in head.group(0).strip().strip("|").split("|")]
+        if "ファイル" not in cols or "元の URL" not in cols:
+            continue
+        fi, ui = cols.index("ファイル"), cols.index("元の URL")
+        # 見出しの次の行は区切り（|---|）。表が終わる（| で始まらない行）まで読む。
+        # 区切りの行と最初の行のあいだに空行を挟んだ map.md があったので、空行は飛ばす
+        for line in text[head.end():].lstrip("\n").split("\n")[1:]:
+            if not line.strip():
+                continue
+            if not line.startswith("|"):
+                break
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) <= max(fi, ui):
+                continue
+            groups = file_groups(cells[fi])
+            # 「同上」は前の行の URL を引き継がない。手元では、別々の論文が並ぶ行で「URL は log 参照」の注記を繰り返す意味だった
+            urls = cell_urls(cells[ui])
+            # URL が1つなら、その行のファイル全部の元。ファイルの単位と同じ数なら順に組にする。
+            # 数が合わないときは付けない（違うページへのリンクは、リンクが無いより悪い）
+            if len(urls) == 1:
+                rows += [(tuple(g), urls[0]) for g in groups]
+            elif urls and len(urls) == len(groups):
+                rows += [(tuple(g), u) for g, u in zip(groups, urls)]
+    return tuple(rows)
+
+
+def source_url(src_dir: Path, file: str) -> str:
+    """引用の原文（sources/ からの相対）の元の URL を、map.md の「原文（sources/）」の表から引く。見つからなければ空"""
+    map_path = Path(src_dir).parent / "map.md"
+    try:
+        mtime = map_path.stat().st_mtime_ns
+    except OSError:
+        return ""
+    rows = _source_rows(str(map_path), mtime)
+    wanted = {file, Path(file).name}
+    for names, url in rows:
+        if any(n in wanted or ("*" in n and fnmatch.fnmatchcase(Path(file).name, n)) for n in names):
+            return url
+    # 名前が合う行が無いときだけ、拡張子を除いた名前で照合する。表に a.md と書いて、実物は文字起こしの a.txt という行があった
+    stem = Path(file).stem
+    for names, url in rows:
+        if any("*" not in n and Path(n).stem == stem for n in names):
+            return url
+    return ""
+
+
+# 外へ出るリンクの印。ほかの印と同じく文字ではなく線の絵にする
+OUT_ICON = ('<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" '
+            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>')
+
+
 def quote_html(src_dir: Path, q: dict, ctx: list[str], c0: int) -> str:
     loc = f"{q['file']}:{q['line']}" + (f"-{q['end']}" if q.get("end") else "")
     hit = range(q["line"], (q.get("end") or q["line"]) + 1)
@@ -108,6 +224,9 @@ def quote_html(src_dir: Path, q: dict, ctx: list[str], c0: int) -> str:
     if q.get("ja"):
         parts.append(f'<p class="ja"><span class="tag">訳</span>{esc(q["ja"])}</p>')
     meta = [f'<code>{esc(loc)}</code>']
+    url = link_url(q.get("url")) or source_url(src_dir, q["file"])
+    if url:
+        meta.append(f'<a class="src" href="{esc(url)}" target="_blank" rel="noopener noreferrer">元のページを開く{OUT_ICON}</a>')
     if q.get("mark"):
         meta.append(f'<span class="mark">{esc(q["mark"])}</span>')
     if q.get("context_note"):
@@ -132,6 +251,8 @@ blockquote{margin:0;padding-left:.9rem;border-left:3px solid var(--accent);white
 .ja{margin:.6rem 0 0;color:var(--sub)}
 .tag{font-size:.75rem;border:1px solid var(--sub);border-radius:4px;padding:0 .3rem;margin-right:.4rem}
 figcaption{margin-top:.6rem;font-size:.8rem;color:var(--sub);display:flex;flex-wrap:wrap;gap:.5rem}
+figcaption a.src{display:inline-flex;align-items:center;gap:.25rem;color:inherit;white-space:nowrap}
+figcaption a.src svg{flex:none}
 code{font-family:ui-monospace,"Cascadia Code",monospace;font-size:.78rem}
 .mark{color:var(--accent)}
 details{margin-top:.5rem;font-size:.8rem}
