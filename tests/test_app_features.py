@@ -95,6 +95,19 @@ class AppFeatureTests(unittest.TestCase):
         # manifest が無いうちに PC のブラウザで入れた窓は minimal-ui で開く。standalone だけを見ると窓の中に案内が残る
         self.assertIn("matchMedia('(display-mode: minimal-ui)')", self.page(served=True))
 
+    # --- 文書の待ちと失敗の札 ---
+
+    def test_doc_wait_card_is_in_the_page_and_starts_hidden(self):
+        for page in (self.page(served=True), self.page(served=False)):
+            self.assertIn('<div class="docwait" id="docwait" hidden><div class="in" role="status">', page)
+        # 待ちの線は動きを減らす設定で止める
+        self.assertIn(".docwait .bar::before{animation:none", dash.CSS)
+
+    def test_status_probe_is_allowed_only_when_served(self):
+        # 文書が開けなかった理由は窓口へ fetch で問い合わせて分ける。ファイルのページでは問い合わせない
+        self.assertIn("connect-src 'self'", self.page(served=True))
+        self.assertNotIn("connect-src", self.page(served=False))
+
     def test_page_html_never_contains_the_token(self):
         code, _, body = self.request(f"/?k={TOKEN}")
         self.assertEqual(code, 200)

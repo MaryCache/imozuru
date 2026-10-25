@@ -810,6 +810,35 @@ body.dragging .dochud{transition:none}
  .docview iframe{position:absolute;left:0;right:0;top:calc(max(10px,env(safe-area-inset-top,0px)) + 51px);
   height:calc(100% - max(10px,env(safe-area-inset-top,0px)) - 51px)}}
 @media (min-width:761px){body.doc main{padding:0;height:100vh;overflow:hidden}body.doc .view{max-width:none}.docview iframe{height:100vh}}
+/* 文書の待ちと失敗の札（2026-10-25 かしぇ「詳細レポートとかで白い画面になるときに　読み込み中なのか　それとも鯖が立ってないのか判別つかない」）。
+   止まったサーバーの手前の Tailscale は 502 を中身なしで返し、枠は読み込み中と同じく白いままだった。
+   枠の真ん中に詳細の札と同じ象牙の紙を1枚置き、待ちの文と、失敗したら理由と次の行動を出す。待ちと失敗の間は枠を透かし、
+   前の文書や白い失敗の画面を見せない。札の位置は枠と同じで、スマホは頭の帯の下から（上の .docview iframe と同じ式） */
+.docview iframe{transition:opacity .2s}
+.docview.pend iframe,.docview.fail iframe{opacity:0}
+.docwait{position:absolute;inset:0;z-index:1;display:grid;place-items:center;padding:16px;pointer-events:none}
+.docwait[hidden]{display:none}
+@media (min-width:761px){.docview{position:relative}}
+@media (max-width:760px){.docwait{top:calc(max(10px,env(safe-area-inset-top,0px)) + 51px)}}
+.docwait .in{pointer-events:auto;width:min(26rem,100%);padding:20px 22px 18px;border-radius:3px;background-color:var(--ivory);background-image:@@PAPER@@;
+ color:var(--ivory-ink);box-shadow:0 0 0 1px var(--ivory-line),0 16px 32px -14px color-mix(in oklch,var(--umbra) 85%,transparent);
+ animation:docwait-in .3s cubic-bezier(.2,.8,.2,1);word-break:auto-phrase}
+@keyframes docwait-in{from{opacity:0;transform:translateY(6px)}}
+.docwait .nm{margin:0 0 2px;font-size:.8rem;line-height:1.6;color:var(--ivory-sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.docwait h2{margin:0;font:600 1.05rem/1.5 var(--head),serif;letter-spacing:.04em}
+.docwait .lead{margin:6px 0 0;font-size:.86rem;line-height:1.7;color:var(--ivory-sub)}
+.docwait .lead:empty{display:none}
+/* 待ちの線。長さの分からない待ちなので、墨の短い線が罫の上を左から右へ流れる（parts/loader.md の線形の indeterminate）。
+   落ち着いた画面なので、点滅や回転にせず、1.6秒のゆっくりした出入りの曲線で流す */
+.docwait .bar{position:relative;display:block;height:2px;margin-top:14px;overflow:hidden;background:var(--ivory-line)}
+.docwait .bar::before{content:"";position:absolute;top:0;bottom:0;left:0;width:32%;background:var(--ivory-ink);animation:docwait-bar 1.6s cubic-bezier(.45,0,.55,1) infinite}
+/* 線の幅（32%）の何倍動かせば罫の端から端まで渡るか: 100% ÷ 32% = 312.5% */
+@keyframes docwait-bar{from{transform:translateX(-100%)}to{transform:translateX(312.5%)}}
+.docwait .acts{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+/* 上の display の指定は .docwait [hidden] と同じ強さで後ろにあり、hidden を付けても線とボタンが残った。強い指定で隠す */
+.docwait .bar[hidden],.docwait .acts[hidden]{display:none}
+/* 動きを減らす設定では、線を真ん中で止める。待ちであることは文で分かる */
+@media (prefers-reduced-motion:reduce){.docview iframe{transition:none}.docwait .in{animation:none}.docwait .bar::before{animation:none;left:34%}}
 /* 項目ごとに下へ細い罫を引いて、行の区切りを見せる（2026-10-22 かしぇ「区分けとかなく並べられてて読みづらい」）。
    罫が項目名と値の間で切れないよう、列の隙間は 0 にして項目名の右の余白で空ける */
 dl.facts{display:grid;grid-template-columns:minmax(0,9rem) minmax(0,1fr);gap:0;margin:8px 0}
@@ -1180,7 +1209,7 @@ body.dragging .docprint{transition:none}
    （2026-10-25 かしぇ「pdf印刷の時　文字以外の余計な要素がついてくる」） */
 @media print{
  html,body,main{background:none!important}
- .side,header,.tools,.inst-bar,.imz-hud,body.doc .dochud,body.doc .docprint,.ptr,.grip,.shade,.frame,.pager{display:none!important}
+ .side,header,.tools,.inst-bar,.docwait,.imz-hud,body.doc .dochud,body.doc .docprint,.ptr,.grip,.shade,.frame,.pager{display:none!important}
  .layout{display:block!important}
  body.doc main{height:auto!important;overflow:visible!important;padding:0!important}
 }
@@ -1293,6 +1322,57 @@ function enter(){if(!RM&&vw.animate)vw.animate([{opacity:0,transform:'translateY
 // 開ける文書は、詳細の札の文書のボタン（data-doc）に在るものだけ。窓口（http）のときは ?embed=1 で戻るボタンを外してもらう
 // 枠の中身を差し替えるときは location.replace で読む。src を書き換えると履歴が1つ積まれ、端末の戻るで枠の中だけが戻った
 var dv=document.getElementById('docview'),fr=dv.querySelector('iframe'),cur='';
+// 文書の待ちと失敗の札。枠が白いままだと、読み込み中とサーバーの停止が見分けられなかった（2026-10-25）。
+// 0.8秒たっても読み終わらなければ待ちの札を出す（1秒未満の待ちに表示は要らない・design-library animations/loading-family.md）。
+// 読み終わったら枠の中身を見て、HTML の文書が入っていなければ失敗とする。窓口の 403・404 は文字だけのページ、
+// 手前の Tailscale は止まったサーバーの代わりに中身の無い 502、つながらなければブラウザの失敗の画面で、どれも文書ではない。
+// 理由は同じ URL を問い合わせ直して状態の番号で分ける。WebKit はつながらなかった枠に load を出さず、待ちの札のまま止まったので、
+// 3秒たっても読み終わらなければ窓口の manifest に黙って問い合わせ、届かなければその時点で失敗の札にする（動いていれば文は替えない）。
+// 10秒たっても読み終わらなければ文を替えて、もう一度確かめる（10秒を超える待ちは様子を伝える・同じ loading-family.md の Nielsen 1993）。
+// 問い合わせは窓口（--serve）で開いたときだけ行う。
+// 束をほかの置き場に載せたページでは CSP が問い合わせを止めるので、理由を分けずに読み直しだけを出す
+var dw=document.getElementById('docwait'),dwn=dw.querySelector('.nm'),dwh=dw.querySelector('h2'),dwl=dw.querySelector('.lead'),
+dwb=dw.querySelector('.bar'),dwa=dw.querySelector('.acts'),dwr=dwa.querySelector('button'),
+dwweb=location.protocol.indexOf('http')===0,dwprb=dwweb&&!!document.querySelector('link[rel=manifest]'),
+dwloc=['127.0.0.1','localhost','[::1]'].indexOf(location.hostname)>=0,dwq=0,dwp=false,dwf=false,dwt1=0,dwt2=0,dwt3=0,dwlb='',
+DWM={wait:['を読み込んでいます',''],
+check:['確かめています','文書を開けなかったので、サーバーの様子を確かめています。'],
+slow:['時間がかかっています','PC のサーバーからの返事を待っています。止まっていないかも確かめています。'],
+alive:['まだ読み込んでいます','サーバーは動いています。大きな文書は時間がかかります。'],
+down:['サーバーが止まっています','PC には届きましたが、ダッシュボードのサーバー（dashboard.py --serve）が動いていません。起動してから、もう一度読み込んでください。'],
+local:['サーバーが止まっています','この PC のサーバー（dashboard.py --serve）が動いていません。起動してから、もう一度読み込んでください。'],
+nonet:['PC に届きません','PC が起動しているか、この端末から PC へつながっているか（Tailscale など）を確かめてから、もう一度読み込んでください。'],
+forbidden:['合言葉を確かめられません','起動したときに表示された、合言葉つきの URL で開き直してください。'],
+missing:['この文書は見つかりません','調査のフォルダから消えたか、名前が変わった可能性があります。ページを読み込み直すと、一覧が今の中身に変わります。'],
+other:['文書を読み込めませんでした','もう一度読み込んでください。']};
+function dwset(k){var x=DWM[k],busy=k==='wait'||k==='check'||k==='slow'||k==='alive';dwh.textContent=k==='wait'?dwlb+x[0]:x[0];dwl.textContent=x[1];
+dwb.hidden=!busy;dwa.hidden=k==='wait'||k==='check';dwr.textContent=k==='missing'?'ページを読み込み直す':'もう一度読み込む';dwr.setAttribute('data-k',k);dw.hidden=false}
+function dwstop(){clearTimeout(dwt1);clearTimeout(dwt2);clearTimeout(dwt3)}
+function dwfail(k){dwstop();dwf=true;dv.classList.remove('pend');dv.classList.add('fail');dwset(k)}
+// 問い合わせの答えを理由に直す。0 は届かなかった（つながらない・6秒で打ち切り）。
+// mode は、fail＝文書が開けなかったあと、quiet・slow＝読み込み中の確かめ。読み込み中に動いていると分かったら、
+// quiet は何もせず、slow は文だけ替える。確かめている間に文書が読み終わっていたら何もしない
+function dwask(q,url,mode){var c=window.AbortController?new AbortController():null,tm=setTimeout(function(){if(c)c.abort()},6000);
+fetch(url,{cache:'no-store',credentials:'same-origin',signal:c?c.signal:undefined}).then(function(r){return r.status},function(){return 0}).then(function(st){clearTimeout(tm);
+if(q!==dwq||mode!=='fail'&&(!dwp||dwf))return;
+var k=st===0?(dwloc?'local':'nonet'):st===403?'forbidden':st===404?'missing':st>=500?'down':mode==='fail'?'other':'alive';
+if(k!=='alive')dwfail(k);else if(mode==='slow')dwset(k)})}
+function dwgo(u,doc){var a=document.querySelector('a[data-doc="'+CSS.escape(doc)+'"]'),t=document.getElementById('t-'+doc.split('/')[0]),h=t&&t.querySelector('h2'),q=++dwq;
+dwlb=a?a.textContent:'文書';dwn.textContent=h?h.textContent:'';
+dwstop();dwp=true;dwf=false;dw.hidden=true;dv.classList.remove('fail');dv.classList.add('pend');
+dwt1=setTimeout(function(){if(q===dwq&&dwp)dwset('wait')},800);
+dwt3=setTimeout(function(){if(q===dwq&&dwp&&dwprb)dwask(q,'manifest.webmanifest','quiet')},3000);
+dwt2=setTimeout(function(){if(q!==dwq||!dwp||dwf)return;dwset('slow');if(dwprb)dwask(q,'manifest.webmanifest','slow')},10000);
+try{if(cur)fr.contentWindow.location.replace(u);else fr.src=u}catch(x){fr.src=u}cur=u}
+// Safari は枠を置いたときの about:blank でも load を出すので、読み込みを頼んだあと（dwp）だけ見る。
+// ファイルを直接開いたページは枠の中を読めないので、読み終わったら成功とする
+fr.addEventListener('load',function(){if(!dwp)return;dwp=false;var d=null,q=dwq;try{d=fr.contentDocument}catch(x){}
+if(!dwweb||d&&d.contentType==='text/html'&&d.body&&d.body.firstElementChild){dwstop();dwf=false;dv.classList.remove('pend','fail');dw.hidden=true;return}
+if(!dwprb){dwfail('other');return}
+dwstop();if(!dw.hidden)dwset('check');else dwt1=setTimeout(function(){if(q===dwq&&!dwf)dwset('check')},400);dwask(q,cur,'fail')});
+// 読み直しは同じ URL でも頼み直す（show は同じ文書なら何もしないので、ここから直接呼ぶ）
+dwr.addEventListener('click',function(){if(dwr.getAttribute('data-k')==='missing'){location.reload();return}
+dwgo(cur,decodeURIComponent(location.hash.slice(5)))});
 // ページの中を移るリンク（調査・ヘルプ・ホーム・文書）は、行き先を data-href へ移して href を外す。href があると、
 // マウスを乗せたときにブラウザが左下に行き先を出し、そこに合言葉つきの URL も見えた（2026-10-22 かしぇ「offれない？」）。
 // スクリプトが動かないときは href のまま普通のリンクとして動く。外したリンクはキーボードで選べるよう tabindex を付ける
@@ -1305,7 +1385,8 @@ else el=h.length>1&&document.getElementById(decodeURIComponent(h.slice(1)));
 document.querySelectorAll('.topic.on').forEach(function(t){if(t!==el)t.classList.remove('on')});if(el&&el.classList.contains('topic'))el.classList.add('on');
 dv.classList.toggle('on',!!doc);b.classList.toggle('doc',!!doc);
 if(doc)document.querySelector('.dochud').setAttribute('data-href','#t-'+doc.split('/')[0]);
-if(doc){var u=doc+(location.protocol.indexOf('http')===0?'?embed=1':'');if(u!==cur){try{if(cur)fr.contentWindow.location.replace(u);else fr.src=u}catch(x){fr.src=u}cur=u}}}
+// 失敗した文書は、もう一度開いたときに頼み直す
+if(doc){var u=doc+(dwweb?'?embed=1':'');if(u!==cur||dwf)dwgo(u,doc)}}
 b.classList.add('js');show();
 function swap(hash,after){var apply=function(){if(location.hash!==hash){ours=true;location.hash=hash}show();top0();marks();if(after)after();enter()};
 if(RM||!vw.animate){apply();return}if(busy)busy.cancel();
@@ -1960,15 +2041,18 @@ def render(topics: list[dict], root: Path, served: bool = False) -> str:
             '<button class="shade" type="button" aria-label="サイドバーを閉じる" tabindex="-1"></button><div class="frame" aria-hidden="true"></div>',
             '<main><div class="view">', home_html(topics), *[topic_html(t) for t in topics],
             f'<section class="topic guide" id="guide">{guide_html(topics)}</section>',
-            '<section class="docview" id="docview" aria-label="文書"><iframe title="文書"></iframe></section>',
+            '<section class="docview" id="docview" aria-label="文書"><iframe title="文書"></iframe>'
+            # 文書の待ちと失敗の札。文と押せるものはスクリプトが入れ替える
+            '<div class="docwait" id="docwait" hidden><div class="in" role="status"><p class="nm"></p><h2></h2><p class="lead"></p>'
+            '<span class="bar" aria-hidden="true"></span><div class="acts" hidden><button class="btn pri" type="button"></button></div></div></div></section>',
             "</div></main></div>", install_html(), feedback_html(form) if form else ""]
     # スクリプトは中身のハッシュで許可する。'unsafe-inline' にすると、調査の記録から紛れ込んだ文字列も動きうる
     hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(js.encode()).digest()).decode() + "'" for js in (SIDE_JS, FEATURE_JS))
     # フォームの送り先は感想のフォームだけに絞る（form-action は default-src を引き継がないので、書かないと全部の宛先へ送れる）。
-    # アプリとして入れる指定は窓口のときだけ読む
+    # アプリとして入れる指定と、文書が開けなかったときに窓口へ様子を問い合わせる fetch は、窓口のときだけ許す
     csp = (f"default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; "
            f"frame-src 'self' file:; script-src {hashes}; form-action {'https://docs.google.com' if form else chr(39) + 'none' + chr(39)}"
-           + ("; manifest-src 'self'" if served else ""))
+           + ("; manifest-src 'self'; connect-src 'self'" if served else ""))
     # ホーム画面のアイコン。画面の高さの数え方を変える apple-mobile-web-app-* の指定とは別物で、見た目の大きさには触れない
     # （apple-mobile-web-app-capable などを足したら、ホーム画面から開いたとき下に帯が出た・2026-10-22）
     icon_link = '<link rel="apple-touch-icon" href="apple-touch-icon.png">' if ICON.is_file() else ""
