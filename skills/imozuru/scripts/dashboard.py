@@ -366,6 +366,7 @@ def make_handler(root: Path, runs: list[dict], token: str):
     from urllib.parse import parse_qs, unquote
 
     extra_hosts = {h.strip().lower() for h in os.environ.get("IMOZURU_SERVE_HOSTS", "").split(",") if h.strip()}
+    sw = sw_js().encode()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -386,6 +387,10 @@ def make_handler(root: Path, runs: list[dict], token: str):
             # アプリとして入れたときのアイコンも同じ。ブラウザは入れるときに cookie を付けずに取りに来ることがある
             if path in APP_ICONS and APP_ICONS[path].is_file():
                 return self.reply(200, "image/png", APP_ICONS[path].read_bytes())
+            # service worker も合言葉なしで返す。ホーム画面のアプリは cookie を分けて持ち、更新の取得に合言葉が付かないことがある。
+            # 中身は代わりの画面とその仕組みだけで、調査の題・中身・合言葉は含まない（sw_js）
+            if path == "/sw.js":
+                return self.reply(200, "text/javascript; charset=utf-8", sw)
             given = parse_qs(query).get("k", [""])[0]
             cookie = dict(c.strip().split("=", 1) for c in self.headers.get("Cookie", "").split(";") if "=" in c)
             # 非 ASCII の鍵も認証失敗として返し、比較の例外で接続を落とさない（2026-10-22 脆弱性レビュー）
@@ -822,11 +827,11 @@ body.dragging .dochud{transition:none}
 @media (max-width:760px){.docwait{top:calc(max(10px,env(safe-area-inset-top,0px)) + 51px)}}
 .docwait .in{pointer-events:auto;width:min(26rem,100%);padding:20px 22px 18px;border-radius:3px;background-color:var(--ivory);background-image:@@PAPER@@;
  color:var(--ivory-ink);box-shadow:0 0 0 1px var(--ivory-line),0 16px 32px -14px color-mix(in oklch,var(--umbra) 85%,transparent);
- animation:docwait-in .3s cubic-bezier(.2,.8,.2,1);word-break:auto-phrase}
+ animation:docwait-in .3s cubic-bezier(.2,.8,.2,1);word-break:auto-phrase;line-break:strict}
 @keyframes docwait-in{from{opacity:0;transform:translateY(6px)}}
 .docwait .nm{margin:0 0 2px;font-size:.8rem;line-height:1.6;color:var(--ivory-sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .docwait h2{margin:0;font:600 1.05rem/1.5 var(--head),serif;letter-spacing:.04em}
-.docwait .lead{margin:6px 0 0;font-size:.86rem;line-height:1.7;color:var(--ivory-sub)}
+.docwait .lead{margin:6px 0 0;font-size:.86rem;line-height:1.7;color:var(--ivory-sub);text-wrap:pretty}
 .docwait .lead:empty{display:none}
 /* 待ちの線。長さの分からない待ちなので、墨の短い線が罫の上を左から右へ流れる（parts/loader.md の線形の indeterminate）。
    落ち着いた画面なので、点滅や回転にせず、1.6秒のゆっくりした出入りの曲線で流す */
@@ -1264,6 +1269,21 @@ CSS = CSS.replace("@@DASH_VARS@@", palette.css_vars(palette.DASH))
 CSS += CORK_CSS
 CSS = CSS.replace("@@PAPER@@", texture_url("paper"))
 
+# 文書の待ちと失敗の札の文（見出し・説明）。wait の見出しは文書の名前の後ろに付ける。
+# サーバーに届かないときに service worker が返す代わりの画面（offline_html）も、down・local・nonet の文をここから取る
+DOC_STATES = {
+    "wait": ["を読み込んでいます", ""],
+    "check": ["確かめています", "文書を開けなかったので、サーバーの様子を確かめています。"],
+    "slow": ["時間がかかっています", "PC のサーバーからの返事を待っています。止まっていないかも確かめています。"],
+    "alive": ["まだ読み込んでいます", "サーバーは動いています。大きな文書は時間がかかります。"],
+    "down": ["サーバーが止まっています", "PC には届きましたが、ダッシュボードのサーバー（dashboard.py --serve）が動いていません。起動してから、もう一度読み込んでください。"],
+    "local": ["サーバーが止まっています", "この PC のサーバー（dashboard.py --serve）が動いていません。起動してから、もう一度読み込んでください。"],
+    "nonet": ["PC に届きません", "PC が起動しているか、この端末から PC へつながっているか（Tailscale など）を確かめてから、もう一度読み込んでください。"],
+    "forbidden": ["合言葉を確かめられません", "起動したときに表示された、合言葉つきの URL で開き直してください。"],
+    "missing": ["この文書は見つかりません", "調査のフォルダから消えたか、名前が変わった可能性があります。ページを読み込み直すと、一覧が今の中身に変わります。"],
+    "other": ["文書を読み込めませんでした", "もう一度読み込んでください。"],
+}
+
 
 # 一覧の開閉。広い画面は一覧の右端のつまみをドラッグして幅を変える・畳む（押すだけでも開閉）。
 # 狭い画面は takubase の OverlappingPanes（Discord 型）に合わせ、本文のどこでも横にスワイプして開閉する:
@@ -1335,16 +1355,7 @@ var dw=document.getElementById('docwait'),dwn=dw.querySelector('.nm'),dwh=dw.que
 dwb=dw.querySelector('.bar'),dwa=dw.querySelector('.acts'),dwr=dwa.querySelector('button'),
 dwweb=location.protocol.indexOf('http')===0,dwprb=dwweb&&!!document.querySelector('link[rel=manifest]'),
 dwloc=['127.0.0.1','localhost','[::1]'].indexOf(location.hostname)>=0,dwq=0,dwp=false,dwf=false,dwt1=0,dwt2=0,dwt3=0,dwlb='',
-DWM={wait:['を読み込んでいます',''],
-check:['確かめています','文書を開けなかったので、サーバーの様子を確かめています。'],
-slow:['時間がかかっています','PC のサーバーからの返事を待っています。止まっていないかも確かめています。'],
-alive:['まだ読み込んでいます','サーバーは動いています。大きな文書は時間がかかります。'],
-down:['サーバーが止まっています','PC には届きましたが、ダッシュボードのサーバー（dashboard.py --serve）が動いていません。起動してから、もう一度読み込んでください。'],
-local:['サーバーが止まっています','この PC のサーバー（dashboard.py --serve）が動いていません。起動してから、もう一度読み込んでください。'],
-nonet:['PC に届きません','PC が起動しているか、この端末から PC へつながっているか（Tailscale など）を確かめてから、もう一度読み込んでください。'],
-forbidden:['合言葉を確かめられません','起動したときに表示された、合言葉つきの URL で開き直してください。'],
-missing:['この文書は見つかりません','調査のフォルダから消えたか、名前が変わった可能性があります。ページを読み込み直すと、一覧が今の中身に変わります。'],
-other:['文書を読み込めませんでした','もう一度読み込んでください。']};
+DWM=@@DOC_STATES@@;
 function dwset(k){var x=DWM[k],busy=k==='wait'||k==='check'||k==='slow'||k==='alive';dwh.textContent=k==='wait'?dwlb+x[0]:x[0];dwl.textContent=x[1];
 dwb.hidden=!busy;dwa.hidden=k==='wait'||k==='check';dwr.textContent=k==='missing'?'ページを読み込み直す':'もう一度読み込む';dwr.setAttribute('data-k',k);dw.hidden=false}
 function dwstop(){clearTimeout(dwt1);clearTimeout(dwt2);clearTimeout(dwt3)}
@@ -1593,7 +1604,7 @@ addEventListener('hashchange',follow);
 filter();paginate(current());
 if(window.ResizeObserver)new ResizeObserver(function(){var k=current()||(pages[pi]||[])[0];paginate(k)}).observe(as);
 if(document.fonts&&document.fonts.ready)document.fonts.ready.then(function(){paginate(current()||(pages[pi]||[])[0])});
-})();"""
+})();""".replace("@@DOC_STATES@@", json.dumps(DOC_STATES, ensure_ascii=False))
 
 # アプリとして入れる・感想と要望を送る・文書を PDF で保存する（2026-10-25 かしぇ）。SIDE_JS とは別に置き、同じくハッシュで許す
 FEATURE_JS = r"""(function(){var b=document.body,RM=matchMedia('(prefers-reduced-motion:reduce)');
@@ -1612,6 +1623,9 @@ d.addEventListener('close',function(){var f=d._from;d._from=null;if(f&&f.focus)f
 d.addEventListener('click',function(e){if(e.target!==d)return;var r=d.getBoundingClientRect();
 if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeD(d)});
 d.querySelectorAll('[data-close]').forEach(function(x){x.addEventListener('click',function(){closeD(d)})})});
+// 窓口（--serve）で開いたときだけ service worker を入れる。次からはサーバーに届かないとき、白い画面の代わりに理由の札を出す（sw_js）。
+// ファイルや束のページには manifest が無いので入れない。入れられなくても本体は動くので、失敗は黙って捨てる
+if(document.querySelector('link[rel=manifest]')&&navigator.serviceWorker)navigator.serviceWorker.register('sw.js').catch(function(){});
 // アプリとして入れる。窓口（http・https）で開いていて、まだアプリとして開いていないときだけ出す。ファイルを直接開いたページは入れられない
 var ib=document.getElementById('inst'),bar=document.getElementById('inst-bar'),idl=document.getElementById('inst-dlg'),K='imozuru-install',ev=null,
 web=/^https?:$/.test(location.protocol),ua=navigator.userAgent,ios=/iPhone|iPad|iPod/.test(ua)||(/Macintosh/.test(ua)&&navigator.maxTouchPoints>1),
@@ -1652,6 +1666,91 @@ var op=[];d.querySelectorAll('details.s:not([open]),details.ans:not([open])').fo
 w.addEventListener('afterprint',function(){op.forEach(function(x){x.open=false})},{once:true});
 w.focus();w.print()});
 })();""".replace("@@PRINT_CSS@@", json.dumps(skin.PRINT_CSS))
+
+# サーバーに届かないとき、service worker（sw_js）が本体の代わりに返す1枚（2026-10-25 かしぇ「止まっているときの代わりの画面を端末に置いておく仕組み　ほしいね」）。
+# 起動したときにサーバーが止まっていると、手前の Tailscale が中身の無い 502 を返し、本体ごと白い画面になった。
+# 見た目は文書の札と同じ象牙の紙をコルク板に1枚置く。5秒ごとに窓口の manifest へ問い合わせ、返事があれば読み直す
+# （かしぇが「自動でつなぎ直す」を選んだ）。service worker は合言葉なしで配るので、調査の題・中身・合言葉は入れない
+OFFLINE_JS = ("(function(){var b=document.querySelector('.acts button'),busy=false;"
+              "b.addEventListener('click',function(){location.reload()});"
+              # 眠っている PC は接続を拒まず黙るので、1回の問い合わせは4秒で打ち切り、重ねて出さない。
+              # 問い合わせ先は service worker の置き場所（data-scope）の下。文書のページ（/調査/digest.html）で出たときも窓口の manifest を見る
+              "function check(){if(busy)return;busy=true;var c=window.AbortController?new AbortController():null,"
+              "t=setTimeout(function(){if(c)c.abort()},4000);"
+              "fetch(document.body.getAttribute('data-scope')+'manifest.webmanifest',{cache:'no-store',credentials:'same-origin',signal:c?c.signal:undefined})"
+              ".then(function(r){if(r.status<500)location.reload()},function(){}).then(function(){clearTimeout(t);busy=false})}"
+              "setInterval(check,5000)})();")
+
+
+def offline_html() -> str:
+    """代わりの画面。見出しと説明は @@H@@・@@LEAD@@、窓口の置き場所は @@SCOPE@@ のまま返し、service worker が入れる"""
+    js_hash = "'sha256-" + base64.b64encode(hashlib.sha256(OFFLINE_JS.encode()).digest()).decode() + "'"
+    csp = ("default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+           f"img-src data:; connect-src 'self'; script-src {js_hash}")
+    css = (f':root{{{palette.css_vars(palette.DASH)}--head:{THEME["head"]},"Hiragino Mincho ProN","Yu Mincho",serif;'
+           '--serif:"Noto Serif JP","Hiragino Mincho ProN","Yu Mincho",serif;color-scheme:dark}'
+           "*{box-sizing:border-box}html,body{margin:0}"
+           "body{min-height:100vh;min-height:100dvh;display:grid;place-items:center;"
+           "padding:max(16px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(16px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));"
+           f"background-color:var(--cork);background-image:{texture_url('cork')};background-size:240px 240px;font-family:var(--serif);color:var(--ivory-ink)}}"
+           # 札は本体の .docwait .in と同じ紙・影・入りの動き
+           f".in{{width:min(26rem,100%);padding:22px 22px 18px;border-radius:3px;background-color:var(--ivory);background-image:{texture_url('paper')};"
+           "box-shadow:0 0 0 1px var(--ivory-line),0 16px 32px -14px color-mix(in oklch,var(--umbra) 85%,transparent);"
+           # 文節で折る指定（auto-phrase）は Safari に無いので、長音や小書きのかなを行頭に置かない指定（strict）も付ける
+           "animation:in .3s cubic-bezier(.2,.8,.2,1);word-break:auto-phrase;line-break:strict}"
+           "@keyframes in{from{opacity:0;transform:translateY(6px)}}"
+           ".nm{margin:0 0 2px;font-size:.8rem;line-height:1.6;color:var(--ivory-sub)}"
+           "h1{margin:0;font:600 1.15rem/1.5 var(--head);letter-spacing:.04em}"
+           # 最後の行に「い。」だけが残る折り返しを避ける（WebKit の幅 390 で出た）
+           ".lead{margin:6px 0 0;font-size:.88rem;line-height:1.7;color:var(--ivory-sub);text-wrap:pretty}"
+           ".bar{position:relative;display:block;height:2px;margin-top:14px;overflow:hidden;background:var(--ivory-line)}"
+           ".bar::before{content:\"\";position:absolute;top:0;bottom:0;left:0;width:32%;background:var(--ivory-ink);animation:bar 1.6s cubic-bezier(.45,0,.55,1) infinite}"
+           "@keyframes bar{from{transform:translateX(-100%)}to{transform:translateX(312.5%)}}"
+           ".poll{margin:10px 0 0;font-size:.8rem;line-height:1.6;color:var(--ivory-sub)}"
+           ".acts{margin-top:16px}"
+           ".btn{min-height:40px;padding:0 18px;border-radius:99px;border:1px solid var(--side-bg);background:var(--side-bg);color:var(--ivory);"
+           "font:600 .92rem/1 var(--head);letter-spacing:.06em;cursor:pointer;transition:transform .15s}"
+           ".btn:active{transform:scale(.96)}.btn:focus-visible{outline:2px solid var(--beni);outline-offset:2px}"
+           "@media (prefers-reduced-motion:reduce){.in{animation:none}.bar::before{animation:none;left:34%}.btn{transition:none}}")
+    return (f'<!doctype html>\n<html lang="ja"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n'
+            f'<meta http-equiv="Content-Security-Policy" content="{csp}">\n'
+            f'<title>imozuru 調査記録</title>{skin.HEAD_META}'
+            f'<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;600&family={THEME["font"]}&display=swap">'
+            f'<style>{css}</style></head>\n<body data-scope="@@SCOPE@@">'
+            '<div class="in" role="status"><p class="nm">imozuru 調査記録</p><h1>@@H@@</h1><p class="lead">@@LEAD@@</p>'
+            '<span class="bar" aria-hidden="true"></span><p class="poll">5秒ごとに確かめています。戻ったら自動で開きます。</p>'
+            '<div class="acts"><button class="btn" type="button">もう一度読み込む</button></div></div>'
+            f"<script>{OFFLINE_JS}</script></body></html>\n")
+
+
+# 窓口が /sw.js で配る service worker。サーバーに届かないときだけ、最上位の画面に代わりの画面（offline_html）を返す
+SW_JS = r"""// imozuru の調査記録の service worker。サーバーに届かないときだけ、本体の代わりの画面を返す。
+// 調査のページは端末に置かない（窓口は no-store で返し、ここでも保存しない）。代わりの画面はこのファイルの中に持つので、
+// 入れるときに取りに行くものは無い（ホーム画面のアプリは cookie を分けて持ち、合言葉の要る取得が通らないことがある）
+var PAGE=@@PAGE@@,STATES=@@STATES@@,LOCAL=['127.0.0.1','localhost','[::1]'];
+self.addEventListener('install',function(){self.skipWaiting()});
+self.addEventListener('activate',function(e){e.waitUntil(self.clients.claim())});
+// 横取りするのは最上位の画面の読み込みだけ。枠（iframe）の文書は本体の札が見分けるので、ここで代わりの画面を返すと
+// 札が「文書が読めた」と取り違える。問い合わせ（manifest）・書体・アイコンは素通りさせる
+self.addEventListener('fetch',function(e){var r=e.request;if(r.mode!=='navigate'||r.destination!=='document')return;e.respondWith(load(r))});
+// 10秒たっても応答の頭が来なければ届かないとみなす（眠っている PC は接続を拒まず黙る）。応答の頭は中身より先に来るので、
+// 窓口が動いていれば大きいページでも10秒はかからない。502・503・504 は手前の中継（Tailscale）がサーバーに届かなかった答え
+function load(r){var t,late=new Promise(function(res){t=setTimeout(function(){res(null)},10000)});
+return Promise.race([fetch(r).catch(function(){return null}),late]).then(function(x){clearTimeout(t);
+if(x&&[502,503,504].indexOf(x.status)<0)return x;
+var k=x?'down':LOCAL.indexOf(self.location.hostname)>=0?'local':'nonet',s=STATES[k];
+return new Response(PAGE.replace('@@H@@',s[0]).replace('@@LEAD@@',s[1]).replace('@@SCOPE@@',self.registration.scope),
+{headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'}})})}
+"""
+
+
+def sw_js() -> str:
+    """service worker の本文。代わりの画面の文は文書の札と同じ表（DOC_STATES）から取る。
+    代わりの画面が変われば本文のバイトも変わり、ブラウザが新しい版に入れ替える"""
+    states = {k: DOC_STATES[k] for k in ("down", "local", "nonet")}
+    return (SW_JS.replace("@@PAGE@@", json.dumps(offline_html(), ensure_ascii=False))
+            .replace("@@STATES@@", json.dumps(states, ensure_ascii=False)))
 
 
 def bars(rows: list[tuple[str, int]], cls: str = "", head: str = "", unit: str = "", colors: dict | None = None) -> str:
@@ -2049,10 +2148,11 @@ def render(topics: list[dict], root: Path, served: bool = False) -> str:
     # スクリプトは中身のハッシュで許可する。'unsafe-inline' にすると、調査の記録から紛れ込んだ文字列も動きうる
     hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(js.encode()).digest()).decode() + "'" for js in (SIDE_JS, FEATURE_JS))
     # フォームの送り先は感想のフォームだけに絞る（form-action は default-src を引き継がないので、書かないと全部の宛先へ送れる）。
-    # アプリとして入れる指定と、文書が開けなかったときに窓口へ様子を問い合わせる fetch は、窓口のときだけ許す
+    # アプリとして入れる指定と、文書が開けなかったときに窓口へ様子を問い合わせる fetch と、サーバーに届かないときの
+    # 代わりの画面を出す service worker は、窓口のときだけ許す
     csp = (f"default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; "
            f"frame-src 'self' file:; script-src {hashes}; form-action {'https://docs.google.com' if form else chr(39) + 'none' + chr(39)}"
-           + ("; manifest-src 'self'; connect-src 'self'" if served else ""))
+           + ("; manifest-src 'self'; connect-src 'self'; worker-src 'self'" if served else ""))
     # ホーム画面のアイコン。画面の高さの数え方を変える apple-mobile-web-app-* の指定とは別物で、見た目の大きさには触れない
     # （apple-mobile-web-app-capable などを足したら、ホーム画面から開いたとき下に帯が出た・2026-10-22）
     icon_link = '<link rel="apple-touch-icon" href="apple-touch-icon.png">' if ICON.is_file() else ""

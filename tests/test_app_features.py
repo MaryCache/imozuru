@@ -108,6 +108,35 @@ class AppFeatureTests(unittest.TestCase):
         self.assertIn("connect-src 'self'", self.page(served=True))
         self.assertNotIn("connect-src", self.page(served=False))
 
+    # --- サーバーに届かないときの代わりの画面（service worker） ---
+
+    def test_service_worker_is_served_without_the_token_and_carries_no_secret(self):
+        code, head, body = self.request("/sw.js")
+        self.assertEqual(code, 200)
+        self.assertEqual(head["Content-Type"], "text/javascript; charset=utf-8")
+        self.assertNotIn(TOKEN.encode(), body)
+        self.assertNotIn("秘密の題".encode(), body)
+        # 許していない Host には返さない
+        self.assertEqual(self.request("/sw.js", {"Host": "evil.example"})[0], 403)
+
+    def test_service_worker_only_takes_over_top_level_pages(self):
+        # 枠（iframe）の文書まで代わりの画面にすると、本体の札が「文書が読めた」と取り違える
+        self.assertIn("r.destination!=='document'", dash.sw_js())
+
+    def test_offline_page_allows_only_its_own_script(self):
+        page = dash.offline_html()
+        js_hash = dash.base64.b64encode(dash.hashlib.sha256(dash.OFFLINE_JS.encode()).digest()).decode()
+        self.assertIn(f"script-src 'sha256-{js_hash}'", page)
+        self.assertIn(f"<script>{dash.OFFLINE_JS}</script>", page)
+        self.assertIn("@@H@@", page)
+        # 戻ったかの問い合わせは、文書のページで出たときも窓口の manifest へ向ける（service worker が置き場所を入れる）
+        self.assertIn('<body data-scope="@@SCOPE@@">', page)
+        self.assertIn("replace('@@SCOPE@@',self.registration.scope)", dash.sw_js())
+
+    def test_worker_is_registered_and_allowed_only_when_served(self):
+        self.assertIn("worker-src 'self'", self.page(served=True))
+        self.assertNotIn("worker-src", self.page(served=False))
+
     def test_page_html_never_contains_the_token(self):
         code, _, body = self.request(f"/?k={TOKEN}")
         self.assertEqual(code, 200)
