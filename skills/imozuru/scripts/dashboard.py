@@ -1535,8 +1535,12 @@ d.querySelectorAll('[data-close]').forEach(function(x){x.addEventListener('click
 var ib=document.getElementById('inst'),bar=document.getElementById('inst-bar'),idl=document.getElementById('inst-dlg'),K='imozuru-install',ev=null,
 web=/^https?:$/.test(location.protocol),ua=navigator.userAgent,ios=/iPhone|iPad|iPod/.test(ua)||(/Macintosh/.test(ua)&&navigator.maxTouchPoints>1),
 plat=ios?'ios':/Android/.test(ua)?'android':/Firefox\//.test(ua)?'firefox':(/Safari\//.test(ua)&&!/Chrome\/|Chromium|Edg\//.test(ua))?'safari':'chromium';
+// アプリの窓は body.app（standalone）に加えて minimal-ui も見る。manifest が無いうちに Edge の「このサイトをアプリとしてインストール」で入れた窓は
+// minimal-ui で開き、standalone だけを見ると窓の中に入れる案内が残った（2026-10-25・Edge の記録の effective_display_mode が 2）。
+// body.app はホーム画面の見た目にも使うので広げない。fullscreen は F11 の全画面のタブにも当たりうるので入れない
+var inapp=b.classList.contains('app')||matchMedia('(display-mode: minimal-ui)').matches;
 function gone(){ib.hidden=true;bar.hidden=true}
-if(!web||b.classList.contains('app'))gone();
+if(!web||inapp)gone();
 else{ib.hidden=false;idl.querySelectorAll('[data-plat]').forEach(function(p){p.hidden=p.getAttribute('data-plat')!==plat});
 var seen=null;try{seen=localStorage.getItem(K)}catch(x){}
 if(!seen)setTimeout(function(){bar.hidden=false;rise(bar,false)},1200)}

@@ -91,6 +91,10 @@ class AppFeatureTests(unittest.TestCase):
         # 入れるボタンは書き出しておき、窓口で開いたときだけスクリプトが出す
         self.assertIn('id="inst" type="button" hidden', static)
 
+    def test_install_prompt_is_hidden_in_minimal_ui_windows(self):
+        # manifest が無いうちに PC のブラウザで入れた窓は minimal-ui で開く。standalone だけを見ると窓の中に案内が残る
+        self.assertIn("matchMedia('(display-mode: minimal-ui)')", self.page(served=True))
+
     def test_page_html_never_contains_the_token(self):
         code, _, body = self.request(f"/?k={TOKEN}")
         self.assertEqual(code, 200)
