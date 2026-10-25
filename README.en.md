@@ -32,17 +32,7 @@ The AI uses the gathered sources as material for its judgement, and the user can
 
 ## The skill's flow
 
-```mermaid
-flowchart LR
-    A[Write the question<br>and the points it needs] --> B[Map the field<br>terms, people, venues]
-    B --> C[Follow<br>citations, links, authors]
-    C --> D[Save the sources]
-    D --> E{Does every point<br>have a source?}
-    E -- not yet --> C
-    E -- yes, or saturated --> F[Build the<br>extract page]
-    F --> G[Build the<br>detailed report]
-    G --> H[Look back on the<br>dashboard]
-```
+<img src="assets/figures/flow-en.webp" alt="The imozuru flow. 1 Write the question and its points. 2 Map the field: terms, people, venues. 3 Follow citations, links and authors. 4 Save the sources. Check whether every point has a source; if not yet, go round again from 3. Once it does, or the search is saturated, 5 build the extract page and the detailed report, and 6 look back on the dashboard" width="720">
 
 Claude first writes down the question and the 3 to 6 points needed to answer it.
 Next, two searchers (subagents that search the web) with different approaches collect terms, people, and venues into a map (`map.md`).
