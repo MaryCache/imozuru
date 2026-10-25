@@ -101,6 +101,30 @@ class _Redirect308(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, 307 if code == 308 else code, msg, headers, newurl)
 
 
+# 宛先が残っているときに1つの宛先を待つ上限（秒）。IPv6 の経路が無い PC では、IPv6 の宛先ごとに
+# 呼び出し側の timeout（fetch は90秒、watch は60秒）まで待ってから IPv4 へ進んでいた（4つの IPv6 で最大6分）
+CONNECT_TRY_SECONDS = 10
+
+
+def _connect_order(addrs: list[str]) -> list[str]:
+    """OS が先に返した種類から、IPv6 と IPv4 を交互に並べる（RFC 8305 の4節）。
+
+    片方の種類に経路が無くても、もう片方を2番目に試せる。
+    """
+    v6 = [a for a in addrs if ":" in a]
+    v4 = [a for a in addrs if ":" not in a]
+    first, second = (v6, v4) if addrs and ":" in addrs[0] else (v4, v6)
+    order = []
+    for i in range(max(len(first), len(second))):
+        order += first[i:i + 1] + second[i:i + 1]
+    return order
+
+
+def _real_timeout(timeout):
+    """既定の timeout の印を、いま使われる秒数（None は待ち続ける）に置き換える。"""
+    return socket.getdefaulttimeout() if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+
+
 def _dial(ip: str, port: int, timeout, source_address):
     """確かめた IP へつなぐ。テストはここを差し替える。"""
     return socket.create_connection((ip, port), timeout, source_address)
@@ -125,7 +149,27 @@ def _pinned_connection(host: str, port: int, timeout, source_address):
                 if not ip.is_global:
                     raise UnsafeURL(f"つなぐ直前に引いた先が手元や内側の宛先（{ip}）だった")
     err = None
-    for addr in addrs:
+    full = _real_timeout(timeout)
+    order = _connect_order(addrs)
+    cut = []
+    for i, addr in enumerate(order):
+        short = i < len(order) - 1 and (full is None or full > CONNECT_TRY_SECONDS)
+        try:
+            sock = _dial(addr, port, CONNECT_TRY_SECONDS if short else timeout, source_address)
+        except TimeoutError as e:
+            err = e
+            if short:
+                cut.append(addr)
+            continue
+        except OSError as e:
+            err = e
+            continue
+        if short:
+            # create_connection は待ち時間をそのままソケットに残す。つないだあとの読み込みは元の timeout で待つ
+            sock.settimeout(full)
+        return sock
+    # 短く待って切った宛先は、ほかが全部だめだったときだけ元の timeout で待ち直す。10秒より遅くつながる宛先を失わない
+    for addr in cut:
         try:
             return _dial(addr, port, timeout, source_address)
         except OSError as e:
@@ -179,7 +223,8 @@ class UnsafeURL(Exception):
 def resolve(host: str) -> list[str]:
     """ホスト名を引いて IP アドレスを返す。テストはここを差し替える。
 
-    OS が返した順（IPv6 と IPv4 のどちらを先に試すか）を保つ。_pinned_connection はこの順につなぐ。
+    OS が返した順（IPv6 と IPv4 のどちらを先に試すか）を保つ。_pinned_connection はこの順の先頭の種類から、
+    IPv6 と IPv4 を交互につなぐ。
     """
     return list(dict.fromkeys(info[4][0] for info in socket.getaddrinfo(host, None)))
 
