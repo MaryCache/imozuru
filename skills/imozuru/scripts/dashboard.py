@@ -529,7 +529,8 @@ LOGO_LIGHT = LOGO.with_name("logo-light.svg")
 ICON = LOGO.with_name("apple-touch-icon.png")
 
 # 色はすべて palette.py に置く。ここでは役割の名前（CSS の変数）だけを使う
-THEME = THEMES[os.environ.get("IMOZURU_DASH_THEME", "1")]
+# IMOZURU_DASH_THEME は見た目を見比べるための開発用の切り替え。知らない値なら既定の 1 に戻す（起動の時点で落とさない）
+THEME = THEMES.get(os.environ.get("IMOZURU_DASH_THEME", "1"), THEMES["1"])
 
 # 引っぱって更新の札。弧（pathLength=1 で描いた量を CSS の dashoffset で決める）と、描き上がったときに付く矢じり。
 # 矢じりは弧の終わり (4.4,9.5) を先端に、時計回りの接線の逆向きへ ±40° で開く（make の計算: 中心 (12,12)・長さ 3.4）
