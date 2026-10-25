@@ -12,7 +12,7 @@
         research_dir … 調査の置き場（既定 ~/research）。直下のフォルダを1件の調査として読む
         --runs       … 回した記録の台帳（任意）。「調査を区切った理由」「感覚と合った？」の列を読む
         --out        … 書き出す先（既定 <research_dir>/index.html）
-        --bundle DIR … ページと各調査の文書（詳細レポート・抜書き・map.md・log.md）だけを DIR に写す。
+        --bundle DIR … ページと各調査の文書（詳細レポート・抜き書き・map.md・log.md）だけを DIR に写す。
                        原文（sources/）は写さない。スマホで見るためにどこかへ載せる束で、入れたファイルの一覧を出す
         --serve [PORT] … ページと文書を 127.0.0.1:PORT（既定 8765）で配る。読み取り専用で、合言葉つきの URL を出す。
                        合言葉は IMOZURU_SERVE_TOKEN で固定できる（スマホのブックマークを保つため）
@@ -244,7 +244,7 @@ def topic_info(d: Path, runs: list[dict]) -> dict:
     fetches = load_jsonl(d / "fetch-log.jsonl")
     info["fetch_ok"] = sum(1 for f in fetches if f.get("status") == "OK") if fetches else None
     info["fetch_ng"] = sum(1 for f in fetches if f.get("status") == "FAIL") if fetches else None
-    info["docs"] = [(name, label) for name, label in (("digest.html", "詳細レポート"), ("report.html", "抜書き"),
+    info["docs"] = [(name, label) for name, label in (("digest.html", "詳細レポート"), ("report.html", "抜き書き"),
                                                        ("map.md", "map.md"), ("log.md", "log.md"))
                     if topic_file(d / name)]
     return info
@@ -285,7 +285,7 @@ def write_bundle(topics: list[dict], root: Path, dest: Path) -> int:
     for f in files:
         print(f)
     print(f"→ {dest}（{len(files)} ファイル・{size / 1e6:.1f} MB。原文は入れていない）")
-    print("注意: 詳細レポートと抜書きには原文からの引用が入る。束を人に渡すときや公開の場所へ置くときは中身を確かめる")
+    print("注意: 詳細レポートと抜き書きには原文からの引用が入る。束を人に渡すときや公開の場所へ置くときは中身を確かめる")
     return 0
 
 
@@ -1773,7 +1773,7 @@ def guide_html(topics: list[dict]) -> str:
               "<li>配信した画面（<code>--serve</code>）を Chrome か Edge で開くと、右上の入れるボタンでアプリとして入れられます。タスクバーやスタートメニューから、ブラウザを開かずに起動できます</li>")
     # 両方の端末に共通の操作（2026-10-25 かしぇ「pdf出力」「フィードバック、レビュー送るモーダル」）
     ops_both = ("<li>文書の表示中は、左下の2つ目のボタンで、その文書を PDF で保存（印刷）できます。根拠の引用は開いた状態で印刷されます</li>"
-                + ("<li>右上の吹き出しのボタンから、作者へ感想・要望を送れます。送るのは書いた内容と版・ブラウザの種類だけです</li>" if feedback_form() else ""))
+                + ("<li>右上の吹き出しのボタンから、作者へ感想・要望を送れます。送るのは書いた内容とバージョン・ブラウザの種類だけです</li>" if feedback_form() else ""))
     ops_sp += ops_both
     ops_pc += ops_both
     phone = ("<ol><li>PC で <code>dashboard.py --serve</code> を実行します。合言葉付きの URL が表示されます</li>"
@@ -1783,7 +1783,7 @@ def guide_html(topics: list[dict]) -> str:
              "<p>配信用の窓口は PC 内部（127.0.0.1）でのみ待ち受け、Tailscale が自分の機器にだけ中継します。"
              "合言葉は <code>IMOZURU_SERVE_TOKEN</code> で固定できます。固定しないと起動ごとに変化し、ホーム画面のアイコンから開けなくなります。</p>")
     claims = '<ul class="claims">' + "".join(f"<li>{status_chip(st)}<span>{esc(text)}</span></li>" for st, text in (
-        ("根拠あり", "論点に原文の所在が付いています。"), ("一部のみ", "論点の一部にのみ原文が付いています。"),
+        ("根拠あり", "論点に原文の場所が付いています。"), ("一部のみ", "論点の一部にのみ原文が付いています。"),
         ("根拠なし", "探索したものの、原文が付いていません。"), ("未確認", "抜き書きが未作成のトピックで、地図の論点にまだ印がありません。"))) + "</ul>"
     counts = (f"<ul><li>トピック: 調査の保存先（既定 <code>~/research</code>）直下のフォルダ1つを1件と数えます</li>"
               f"<li>原文: <code>sources/</code> のファイルを、拡張子を除いた名前で集計します（PDF とその文字起こしは1本）</li>"
@@ -1794,7 +1794,7 @@ def guide_html(topics: list[dict]) -> str:
               "<li>台帳記載の周回数・原文数が集計値と異なる場合のみ、括弧で台帳の値を併記します</li>"
               "<li>「記録なし」は、0 と区別するための表示です</li></ul>")
     return sentence_lines(f"""<h2><span lang="en">imozuru</span> 調査記録とは</h2>
-<p class="lead">imozuru で行った調査を、トピックごとに並べたダッシュボードです。トピックは、1つの疑問について調べたひとまとまりのことを指します。過去のトピックとその文書を探し出し、それぞれがどこまで進んでどう終わったかを見比べられます。</p>
+<p class="lead">imozuru で行った調査を、トピックごとに並べたダッシュボードです。トピックは1つの疑問について調べたひとまとまりのことを指します。過去のトピックとその文書を探し出し、それぞれがどこまで進んでどう終わったかを見比べられます。</p>
 <div class="card"><h3>スキルのフロー</h3>
 <p>imozuru は1つのトピックを、次の段の順に進めます。各段の下の名前は、その結果が出る画面の項目です。</p>
 <ol class="flow" start="0">{flow}</ol></div>
@@ -1859,7 +1859,7 @@ FIND_HTML = ('<label class="find"><svg class="lens" viewBox="0 0 24 24" width="1
 # 0件のとき。無かったことと打った語をはっきり出し、次の一手（語を消す）を添える。どこを探したかも書く
 # （NN/g 2014「Clearly explain that there are no matching results」・ビービット 2007「次にどういうアクションを取ればよいか」）
 FIND_NONE = ('<div class="find-none" hidden><p>「<b class="nq"></b>」に当てはまるトピックはない</p>'
-             '<p class="where">題名・読み・用語・人・媒体から探した</p><button type="button">検索語を消す</button></div>')
+             '<p class="where">題名・疑問・読み・用語・人・媒体から探した</p><button type="button">検索語を消す</button></div>')
 
 
 def pager_html(kind: str) -> str:
@@ -1885,7 +1885,7 @@ def install_html() -> str:
     }
     plats = "".join(f'<div data-plat="{k}">{v}</div>' for k, v in steps.items())
     return (f'<section class="inst-bar" id="inst-bar" aria-labelledby="inst-h" hidden><span class="ic">{INSTALL_ICON}</span>'
-            '<div class="tx"><h2 id="inst-h">アプリとして入れる</h2><p>アイコンから、ブラウザを開かずに開けます</p></div>'
+            '<div class="tx"><h2 id="inst-h">アプリとして入れる</h2><p>アイコンから、ブラウザを開かずに起動できます</p></div>'
             f'<button class="btn pri go" type="button">入れる</button><button class="x" type="button" aria-label="この案内を閉じる">{CLOSE_ICON}</button></section>'
             '<dialog class="dlg" id="inst-dlg" aria-labelledby="inst-dh"><div class="in"><h2 id="inst-dh">アプリとして入れる</h2>'
             '<p class="lead">入れると、ホーム画面やタスクバーのアイコンから、この調査記録をすぐに開けます。合言葉の入力は要りません。</p>'
@@ -1908,7 +1908,7 @@ def feedback_html(form: dict) -> str:
             f'<form method="post" action="{esc(form["action"])}" target="_blank" rel="noopener noreferrer">'
             f'<fieldset><legend>種類</legend><div class="chips">{kinds}</div></fieldset>{rating}'
             '<label class="lbl" for="fb-body">内容</label><textarea id="fb-body" name="' + form["body"] + '" required maxlength="4000"></textarea>'
-            f'{hidden}<p class="what">送るのは、ここに書いた内容と、imozuru の版（{esc(version)}）・ブラウザの種類だけです。調査の題や中身は送りません。'
+            f'{hidden}<p class="what">送るのは、ここに書いた内容と、imozuru のバージョン（{esc(version)}）・ブラウザの種類だけです。調査の題や中身は送りません。'
             '送ると、Google フォームの受付画面が別のタブで開きます。</p>'
             '<div class="acts"><button class="btn" type="button" data-close>取消</button><button class="btn pri" type="submit">送る</button></div></form>'
             '<div class="done" role="status"><p>受付の画面を別のタブで開きました。そこに「回答を記録しました」と出ていれば届いています。ありがとうございます。</p>'
