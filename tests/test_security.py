@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -74,6 +75,43 @@ class _Server(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class _Proxy(_Server):
+    def do_GET(self):
+        body = b"via-proxy"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class HttpProxyTests(unittest.TestCase):
+    def setUp(self):
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Proxy)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        proxy_url = f"http://127.0.0.1:{server.server_port}"
+        env = patch.dict(os.environ, {"http_proxy": proxy_url, "no_proxy": "", "NO_PROXY": "",
+                                    "IMOZURU_ALLOW_PRIVATE": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        for module in (fetch, watch):
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": proxy_url}),
+                module._Redirect308, module._PinnedHTTPHandler, module._PinnedHTTPSHandler)
+            for patcher in (patch.object(module, "_OPENER", opener),
+                            patch.object(module, "resolve", lambda host: {PUBLIC_IP} if host == "example.test"
+                                         else REAL_RESOLVE(host))):
+                patcher.start()
+                self.addCleanup(patcher.stop)
+
+    def test_fetch_download_through_http_proxy(self):
+        self.assertEqual(fetch.download("http://example.test/x")[0], b"via-proxy")
+
+    def test_watch_fetch_through_http_proxy(self):
+        self.assertEqual(watch.fetch("http://example.test/x")[0], b"via-proxy")
+
+
 class UnsafeUrlTests(unittest.TestCase):
     """手元や内側の宛先を取りに行かない。転送の先でも同じ。"""
 
@@ -84,7 +122,7 @@ class UnsafeUrlTests(unittest.TestCase):
         self.addCleanup(self.server.shutdown)
         self.base = f"http://localhost:{self.server.server_port}"
         for module in (fetch, watch):
-            dial = patch.object(module, "_dial", dial_public_as_local, create=True)
+            dial = patch.object(module, "_dial", dial_public_as_local)
             dial.start()
             self.addCleanup(dial.stop)
 

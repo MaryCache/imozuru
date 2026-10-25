@@ -241,7 +241,7 @@ The record is assembled by machine from every hit of every query and from the fe
 - The searchers search the web, so the content of your question leaves your machine as search terms. Don't use the skill for research involving confidential or personal data.
 - The skill does not use ways around paywalls, and sources it cannot reach are reported as "not reached".
 - Saved sources are copies for reading locally, so please don't redistribute them.
-- The fetching scripts only fetch http(s) URLs, and never fetch local or internal addresses (127.0.0.1, 192.168.x.x and so on), so that a crafted URL in search results cannot read services running on your machine. Some VPN and proxy tools resolve even public site names to internal addresses, and then nothing can be fetched. Only in that case, set the environment variable `IMOZURU_ALLOW_PRIVATE=1` to turn this address check off.
+- The fetching scripts only fetch http(s) URLs, and never fetch local or internal addresses (127.0.0.1, 192.168.x.x and so on), so that a crafted URL in search results cannot read services running on your machine. Some VPN and proxy tools resolve even public site names to internal addresses, and then nothing can be fetched. Only in that case, set the environment variable `IMOZURU_ALLOW_PRIVATE=1` to turn this address check off. When using a proxy, the proxy resolves the hostname, so pinning the connection to a checked IP cannot prevent DNS rebinding.
 
 ## License
 

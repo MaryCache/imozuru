@@ -30,7 +30,7 @@ def load(name):
 fetch = load("fetch")
 watch = load("watch")
 # テストの宛先（example.test と手元の小さなサーバー）を、インターネット上の宛先に引けたことにする。
-# 引いた結果を確かめるだけで、接続は urllib が別に名前を引いて行うので、手元のサーバーにつながる
+# 接続時もこの resolve で引いた IP を確かめ、下の _dial で手元のサーバーにつなぐ
 fetch.resolve = watch.resolve = lambda host: {"93.184.215.14"}
 # _pinned_connection は引いた IP へじかにつなぐので、見せかけの IP は手元のサーバーへ回す
 import socket as _socket

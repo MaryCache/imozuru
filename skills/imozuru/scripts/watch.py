@@ -77,6 +77,7 @@ def url_problem(url: str) -> str | None:
     宛先のときだけ通す。10進や16進で書いた IP も、名前を引けば 127.0.0.1 などになるので同じく止まる。
     名前を引いてから接続するまでの間に引き先を変える手（DNS rebinding）は、_pinned_connection が
     つなぐ直前に引き直して確かめた IP へじかにつなぐことで防ぐ。
+    プロキシを通すときは名前をプロキシが引くので、この固定では DNS rebinding を防げない。
 
     ホストの部分に「@」か「%」があれば断る。urlsplit は「x@a.example」の a.example を見るが、
     urllib は x@a.example をそのまま引き、「%61」は urllib だけが a に戻す。検査とつなぐ先がずれる。
@@ -154,7 +155,8 @@ def _pinned_connection(host: str, port: int, timeout, source_address):
     url_problem で名前を引いてから urllib がつなぐまでの間に、引き先を 127.0.0.1 などへ
     変えられると検査をすり抜ける（DNS rebinding）。つなぐ時に引いた結果をもう一度確かめ、
     その IP にじかにつなぐので、検査した宛先と実際の宛先がずれない。HTTPS の証明書の確認と
-    SNI はホスト名のまま行われる（2026-10-22 手元で追加）。
+    SNI はホスト名のまま行われる。
+    プロキシを通すときは名前をプロキシが引くので、この固定では DNS rebinding を防げない。
     """
     try:
         addrs = list(resolve(host))
@@ -197,6 +199,8 @@ class _PinnedHTTPSConnection(_PinnedMixin, http.client.HTTPSConnection):
 
 class _PinnedHTTPHandler(urllib.request.HTTPHandler):
     def http_open(self, req):
+        if req.has_proxy():
+            return self.do_open(http.client.HTTPConnection, req)
         return self.do_open(_PinnedHTTPConnection, req)
 
 
