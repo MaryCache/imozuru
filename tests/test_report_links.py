@@ -109,6 +109,51 @@ class SourceUrlTests(unittest.TestCase):
         self.assertEqual(self.url("a-paper.txt"), "")
 
 
+class FetchLogTests(unittest.TestCase):
+    """表から引けない原文は、取得の記録（fetch-log.jsonl）の URL を使う"""
+
+    LOG = [
+        {"url": "https://example.org/old", "name": "p-post", "status": "OK", "file": "p-post.md"},
+        {"url": "https://example.org/p", "name": "p-post", "status": "OK", "file": "p-post.md"},
+        {"url": "https://example.org/q", "name": "q-post", "status": "FAIL", "reason": "403"},
+        {"time": "2026-10-24T22:21:13", "name": "r-post", "url": "https://example.org/r", "result": "OK", "file": "sources/r-post.md"},
+        {"url": "https://example.org/s.pdf", "name": "s-paper", "status": "OK", "file": "s-paper.pdf"},
+        {"url": "javascript:alert(1)", "name": "t-post", "status": "OK", "file": "t-post.md"},
+        {"url": "https://example.org/log-a", "name": "a-paper", "status": "OK", "file": "a-paper.txt"},
+    ]
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.topic = Path(tmp.name)
+        (self.topic / "sources").mkdir()
+        (self.topic / "map.md").write_text(MAP, encoding="utf-8")
+        (self.topic / "fetch-log.jsonl").write_text(
+            "\n".join(report.json.dumps(r) for r in self.LOG) + "\n壊れた行\n", encoding="utf-8")
+        self.src = self.topic / "sources"
+
+    def url(self, file):
+        return report.source_url(self.src, file)
+
+    def test_latest_successful_fetch_is_used(self):
+        self.assertEqual(self.url("p-post.md"), "https://example.org/p")
+        self.assertEqual(self.url("r-post.md"), "https://example.org/r")
+
+    def test_failed_or_unsafe_fetches_are_not_linked(self):
+        self.assertEqual(self.url("q-post.md"), "")
+        self.assertEqual(self.url("t-post.md"), "")
+
+    def test_text_file_of_a_fetched_pdf_matches_by_stem(self):
+        self.assertEqual(self.url("s-paper.txt"), "https://example.org/s.pdf")
+
+    def test_table_wins_over_the_log(self):
+        self.assertEqual(self.url("a-paper.txt"), "https://example.org/a.pdf")
+
+    def test_without_map_the_log_is_still_used(self):
+        (self.topic / "map.md").unlink()
+        self.assertEqual(self.url("a-paper.txt"), "https://example.org/log-a")
+
+
 class QuoteHtmlTests(SourceUrlTests):
     def quote(self, **q):
         q = {"file": "a-paper.txt", "line": 1, "text": "x", **q}

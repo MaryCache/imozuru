@@ -19,7 +19,7 @@ extracts.json の形（例はリポジトリの examples/demo/extracts.json）:
                  "quotes": [{"file", "line", "end"?, "text", "ja"?, "mark"?, "context_note"?, "url"?}]}],
      "disagreements"?: [{"topic", "quotes": [{..., "who"}]}],
      "unreached"?: ["..."]}
-引用の元のページへのリンクは "url" か、無ければ map.md の「原文（sources/）」の表の「元の URL」から付ける。
+引用の元のページへのリンクは "url" か、無ければ map.md の「原文（sources/）」の表の「元の URL」か取得の記録（fetch-log.jsonl）から付ける。
 """
 
 import fnmatch
@@ -184,24 +184,65 @@ def _source_rows(map_path: str, _mtime: int) -> tuple:
     return tuple(rows)
 
 
-def source_url(src_dir: Path, file: str) -> str:
-    """引用の原文（sources/ からの相対）の元の URL を、map.md の「原文（sources/）」の表から引く。見つからなければ空"""
-    map_path = Path(src_dir).parent / "map.md"
+@lru_cache(maxsize=64)
+def _fetched(log_path: str, _mtime: int) -> tuple[dict, dict]:
+    """取得の記録（fetch-log.jsonl）から、取得に成功した原文の URL を引く表を作る。（ファイル名→URL, 保存名→URL）。
+    fetch.py は status と sources/ の中の名前を、ほかの取得の道具は result と sources/ 付きの名前を書いていた。
+    同じ原文を取り直した行は、あとの行（いちばん新しい取得）を使う"""
+    by_file, by_stem = {}, {}
     try:
-        mtime = map_path.stat().st_mtime_ns
+        lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return ""
-    rows = _source_rows(str(map_path), mtime)
+        return by_file, by_stem
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or "OK" not in (r.get("status"), r.get("result")):
+            continue
+        url = link_url(r.get("url"))
+        if not url:
+            continue
+        file = r.get("file")
+        if isinstance(file, str) and file:
+            file = re.sub(r"^sources/", "", file)
+            by_file[file] = by_file[Path(file).name] = url
+            by_stem[Path(file).stem] = url
+        if isinstance(r.get("name"), str) and r["name"]:
+            by_stem[r["name"]] = url
+    return by_file, by_stem
+
+
+def source_url(src_dir: Path, file: str) -> str:
+    """引用の原文（sources/ からの相対）の元の URL を引く。見つからなければ空。
+    map.md の「原文（sources/）」の表を先に見て、無ければ取得の記録（fetch-log.jsonl）を見る。
+    手元では、引用された原文 765 本のうち表から引けるのは 418 本で、取得の記録も見ると 509 本になった。
+    表は書き手が整えたものなので、名前がそのまま合う行を表・記録の順に探し、拡張子だけが違う行は最後に表・記録の順に探す"""
+    topic = Path(src_dir).parent
+    rows, (log_file, log_stem) = (), ({}, {})
+    try:
+        rows = _source_rows(str(topic / "map.md"), (topic / "map.md").stat().st_mtime_ns)
+    except OSError:
+        pass
+    try:
+        log_file, log_stem = _fetched(str(topic / "fetch-log.jsonl"), (topic / "fetch-log.jsonl").stat().st_mtime_ns)
+    except OSError:
+        pass
     wanted = {file, Path(file).name}
     for names, url in rows:
         if any(n in wanted or ("*" in n and fnmatch.fnmatchcase(Path(file).name, n)) for n in names):
             return url
-    # 名前が合う行が無いときだけ、拡張子を除いた名前で照合する。表に a.md と書いて、実物は文字起こしの a.txt という行があった
+    for n in (file, Path(file).name):
+        if n in log_file:
+            return log_file[n]
+    # 名前が合う行が無いときだけ、拡張子を除いた名前で照合する。表に a.md と書いて実物は文字起こしの a.txt という行や、
+    # 記録には取った a.pdf だけがあって引用は文字起こしの a.txt という行があった
     stem = Path(file).stem
     for names, url in rows:
         if any("*" not in n and Path(n).stem == stem for n in names):
             return url
-    return ""
+    return log_stem.get(stem, "")
 
 
 # 外へ出るリンクの印。ほかの印と同じく文字ではなく線の絵にする
