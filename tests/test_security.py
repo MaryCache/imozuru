@@ -673,6 +673,88 @@ class DeepSeekSplitReviewTests(unittest.TestCase):
         self.assertIn("壁に当たった（you're not a bot）", out.getvalue())
 
 
+class TestConnectOrder(unittest.TestCase):
+    """IPv6 の経路が無い PC でも、IPv6 の宛先ごとに長く待たずに IPv4 へ進む。"""
+
+    V6 = ["2606:50c0:8000::154", "2606:50c0:8001::154"]
+    V4 = ["185.199.108.133", "185.199.109.133"]
+
+    def connect(self, module, addrs, timeout, dial_result):
+        tries = []
+        sock = MagicMock()
+
+        def dial(ip, port, wait, source_address):
+            tries.append((ip, wait))
+            error = dial_result(ip, wait)
+            if error:
+                raise error
+            return sock
+
+        with patch.object(module, "resolve", lambda host: addrs), patch.object(module, "_dial", dial):
+            got = module._pinned_connection("example.test", 443, timeout, None)
+        self.assertIs(got, sock)
+        return tries, sock
+
+    @staticmethod
+    def no_ipv6_route(ip, wait):
+        return TimeoutError("timed out") if ":" in ip else None
+
+    def test_tries_ipv4_second_with_a_short_wait(self):
+        for module in (fetch, watch):
+            with self.subTest(module=module.__name__):
+                tries, sock = self.connect(module, self.V6 + self.V4, 90, self.no_ipv6_route)
+                self.assertEqual(tries, [(self.V6[0], 10), (self.V4[0], 10)])
+                # つないだあとの読み込みは、呼び出し側の timeout で待つ
+                sock.settimeout.assert_called_once_with(90)
+
+    def test_ipv4_first_list_starts_with_ipv4(self):
+        tries, _ = self.connect(fetch, self.V4[:1] + self.V6, 90,
+                                lambda ip, wait: OSError("unreachable") if "." in ip else None)
+        self.assertEqual([ip for ip, _ in tries], [self.V4[0], self.V6[0]])
+
+    def test_last_address_keeps_the_callers_timeout(self):
+        for module in (fetch, watch):
+            with self.subTest(module=module.__name__):
+                tries, sock = self.connect(module, self.V4[:1], 90, lambda ip, wait: None)
+                self.assertEqual(tries, [(self.V4[0], 90)])
+                sock.settimeout.assert_not_called()
+
+    def test_short_caller_timeout_is_not_lengthened(self):
+        tries, sock = self.connect(fetch, self.V6[:1] + self.V4[:1], 3, self.no_ipv6_route)
+        self.assertEqual(tries, [(self.V6[0], 3), (self.V4[0], 3)])
+        sock.settimeout.assert_not_called()
+
+    def test_short_default_timeout_is_not_lengthened(self):
+        default = fetch.socket._GLOBAL_DEFAULT_TIMEOUT
+        with patch.object(fetch.socket, "getdefaulttimeout", return_value=0.25):
+            tries, _ = self.connect(fetch, self.V6[:1] + self.V4[:1], default, self.no_ipv6_route)
+        self.assertEqual(tries, [(self.V6[0], default), (self.V4[0], default)])
+
+    def test_slow_address_is_retried_with_the_full_timeout(self):
+        # IPv6 は10秒より遅くつながり、IPv4 には届かない。短く切った IPv6 を、最後に元の timeout で待ち直す
+        def slow_ipv6(ip, wait):
+            if ":" in ip:
+                return TimeoutError("timed out") if wait == 10 else None
+            return OSError("unreachable")
+
+        for module in (fetch, watch):
+            with self.subTest(module=module.__name__):
+                tries, sock = self.connect(module, self.V6[:1] + self.V4[:1], 90, slow_ipv6)
+                self.assertEqual(tries, [(self.V6[0], 10), (self.V4[0], 90), (self.V6[0], 90)])
+                sock.settimeout.assert_not_called()
+
+    def test_private_address_later_in_the_list_refuses_before_any_connection(self):
+        for module in (fetch, watch):
+            with self.subTest(module=module.__name__):
+                dial = MagicMock()
+                with patch.object(module, "resolve", lambda host: ["2606:4700::1", "1.1.1.1", "10.0.0.1"]), \
+                        patch.object(module, "_dial", dial), \
+                        patch.dict(os.environ, {"IMOZURU_ALLOW_PRIVATE": ""}):
+                    with self.assertRaises(module.UnsafeURL):
+                        module._pinned_connection("example.test", 443, 90, None)
+                dial.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
 
