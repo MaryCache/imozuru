@@ -756,6 +756,19 @@ class OcrLanguageTests(unittest.TestCase):
         self.assertEqual(text, "")
         self.assertIn("読めなかったページ", note)
 
+    def test_pdftoppm_failing_midway_fails_the_whole_ocr(self):
+        # #14: pdftoppm が1ページだけ書いて終了コード 1 で落ちても、残りの画像だけで成功扱いにしない
+        tools = self.fake_tools(conf=95)
+
+        def run(cmd, **kw):
+            if cmd[0] == "pdftoppm":
+                Path(f"{cmd[-1]}-1.png").write_bytes(b"png")
+                return subprocess.CompletedProcess(cmd, 1)
+            return tools(cmd, **kw)
+        text, note = self.ocr(run)
+        self.assertEqual(text, "")
+        self.assertIn("終了コード 1", note)
+
     def test_fail_line_names_the_ocr_reason(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(fetch, "download", return_value=(b"%PDF-1.4\nscan", "application/pdf")), \

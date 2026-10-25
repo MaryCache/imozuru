@@ -477,6 +477,8 @@ def ocr_pdf(pdf: Path) -> tuple[str, str]:
         if done is None:
             return "", "PDF を画像にする途中で時間切れ"
         # 途中で落ちると、書き出せたページの画像だけが残る。残りを OCR すると欠けた本文が成功扱いになる（#14）
+        if done.returncode != 0:
+            return "", f"PDF を画像にする途中で失敗（pdftoppm の終了コード {done.returncode}）"
         langs = ocr_langs()
         pages, failed, weighted, chars = [], [], 0.0, 0
         for img in sorted(tmp.glob("p-*.png")):
