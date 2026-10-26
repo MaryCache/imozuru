@@ -94,6 +94,30 @@ class FileBoundaryTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("Original sentence", context)
 
+    def test_report_matches_extracts_across_bullet_lines(self):
+        """箇条書きの何行かにまたがる抜き書きを、印を除いても、印ごと写しても通す。言い換えは通さない。"""
+        (self.sources / "list.md").write_text(
+            "# 手順\n\n- 一つ目の項目です\n- 二つ目の項目です\n* 三つ目の項目です\n", encoding="utf-8")
+        cases = {
+            "一つ目の項目です 二つ目の項目です": True,
+            "一つ目の項目です\n二つ目の項目です\n三つ目の項目です": True,
+            "一つ目の項目です - 二つ目の項目です": True,
+            "一つ目の項目です 三つ目の項目です": False,
+            "一つ目の項目でした 二つ目の項目です": False,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                q = {"file": "list.md", "line": 3, "end": 5, "text": text}
+                self.assertEqual(report.verify(self.sources, q)[0], expected)
+
+    def test_report_keeps_line_start_minus_in_text_sources(self):
+        """PDF から起こした .txt の行頭の「- 」は負号のことがある。負号を落とした抜き書きは通さない。"""
+        (self.sources / "paper.txt").write_text("変化量は\n- 5 mgです。\n", encoding="utf-8")
+        for text, expected in (("変化量は 5 mgです。", False), ("変化量は - 5 mgです。", True)):
+            with self.subTest(text=text):
+                q = {"file": "paper.txt", "line": 1, "end": 2, "text": text}
+                self.assertEqual(report.verify(self.sources, q)[0], expected)
+
     def test_failed_report_keeps_prior_content(self):
         (self.sources / "paper.md").write_text("Original sentence", encoding="utf-8")
         data = {"title": "Test", "question": "Q", "stopped": "Done", "claims": [

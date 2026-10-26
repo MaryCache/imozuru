@@ -173,7 +173,13 @@ class DigestTests(unittest.TestCase):
                 victim = self.topic.parent / f"keep-{name}.txt"
                 victim.write_text("Keep", encoding="utf-8")
                 planted = self.topic / f".{name}.html.tmp"
-                planted.symlink_to(victim)
+                try:
+                    planted.symlink_to(victim)
+                except OSError as exc:
+                    # 飛ばすのは、管理者でない Windows で権限が無いとき（WinError 1314）だけ。ほかの失敗は落とす
+                    if getattr(exc, "winerror", None) != 1314:
+                        raise
+                    self.skipTest(f"Symlinks unavailable: {exc}")
                 build()
                 self.assertEqual(victim.read_text(encoding="utf-8"), "Keep")
                 self.assertTrue(planted.is_symlink())

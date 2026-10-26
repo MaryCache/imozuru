@@ -5,6 +5,7 @@ import contextlib
 import http.server
 import importlib.util
 import io
+import locale
 import subprocess
 import sys
 import tempfile
@@ -62,10 +63,12 @@ class EncodingTests(unittest.TestCase):
 
     def test_report_check_runs_without_default_encoding(self):
         """既定の文字コードに頼る箇所があれば、EncodingWarning をエラーにして落とす。"""
+        # 子のプロセスは、パイプへの出力を手元の文字コード（Windows では cp932）で書き、出せない字だけを置き換える。
+        # utf-8 で読むと Windows では読めずに stdout が None になっていた（2026-10-26）
         res = subprocess.run(
             [sys.executable, "-I", "-X", "warn_default_encoding", "-W", "error::EncodingWarning",
              str(SCRIPTS / "report.py"), str(ROOT / "examples/demo"), "--check"],
-            capture_output=True, encoding="utf-8")
+            capture_output=True, encoding=locale.getpreferredencoding(False), errors="replace")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("照合 OK", res.stdout)
 

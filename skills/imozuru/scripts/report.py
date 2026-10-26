@@ -76,21 +76,35 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
     start = max(1, first - 2)
     end = min(len(lines), last + 2)
     # ここから先は、検査を通った first・last だけを使う
-    region = norm(" ".join(lines[start - 1:end]))
+    # スペースでつないでから整えると、行頭の印は1行目のものしか消えない。2行目より後の「- 」が残り、
+    # 箇条書きにまたがる抜き書きが落ちた（penpenguin の記事・2026-10-17）。
+    # Markdown の原文に限り、行ごとに印を消した形でも照らす。Markdown の行頭の「- 」はリストの印で、
+    # HTML から起こした .md は段落が1行にまとまる。PDF から起こした .txt では行頭の「- 」が負号のことがあり、
+    # 消すと「- 5 mg」を「5 mg」と写した抜き書きまで通る（2026-10-26 のレビュー）ので、従来の形だけで照らす。
+    # 従来の形を残すのは、印ごと写した前からの抜き書きを落とさないため
+    window = lines[start - 1:end]
+    regions = [norm(" ".join(window))]
+    if path.suffix.lower() == ".md":
+        regions.append(norm("\n".join(window)))
     # 2段組の PDF は左右の段が1行に混ざり、何行かにまたがる文はそのままでは照合できない
     # （Yoshida 2008 で起きた）。抜き書きを「…」で区切れば、区切りごとに順に照らす。
     # 区切りはページにも「…」として残るので、省いたことが読む人に見える。
     pieces = [norm(p) for p in q["text"].split("…") if norm(p)]
-    ok, pos = bool(pieces), 0
-    for piece in pieces:
-        at = region.find(piece, pos)
-        if at < 0:
-            ok = False
-            break
-        pos = at + len(piece)
+    ok = bool(pieces) and any(_in_order(pieces, region) for region in regions)
     c0 = max(1, q["line"] - CONTEXT_LINES)
     c1 = min(len(lines), last + CONTEXT_LINES)
     return ok, lines[c0 - 1:c1], c0, c1
+
+
+def _in_order(pieces: list[str], region: str) -> bool:
+    """区切りがどれも、前の区切りより後ろに region の中で現れるか。"""
+    pos = 0
+    for piece in pieces:
+        at = region.find(piece, pos)
+        if at < 0:
+            return False
+        pos = at + len(piece)
+    return True
 
 
 def esc(s: str) -> str:

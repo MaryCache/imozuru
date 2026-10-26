@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,24 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "skills/imozuru/scripts"
 spec = importlib.util.spec_from_file_location("dash", SCRIPTS / "dashboard.py")
 dash = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dash)
+
+# Windows でシンボリックリンクを作る権限が無いときのエラー番号と、フォルダ名に使えない文字を含むときのエラー番号
+WINERROR_PRIVILEGE_NOT_HELD = 1314
+WINERROR_INVALID_NAME = 123
+
+
+def symlink_or_skip(test, link, target, **kwargs):
+    """シンボリックリンクを作る。作れない環境（管理者でない Windows など）では、その試験を飛ばす。"""
+    try:
+        link.symlink_to(target, **kwargs)
+    except NotImplementedError as exc:
+        test.skipTest(f"Symlinks unavailable: {exc}")
+    except OSError as exc:
+        # 飛ばすのは権限が無いとき（WinError 1314）だけ。ほかの失敗は試験の準備の誤りなので落とす
+        if getattr(exc, "winerror", None) != WINERROR_PRIVILEGE_NOT_HELD:
+            raise
+        test.skipTest(f"Symlinks unavailable: {exc}")
+
 
 RUNS = """| 日付 | 話題 | 型 | 回した人 | 調査を区切った理由 | 周 | 原文 | 感覚と合った？ |
 |---|---|---|---|---|---|---|---|
@@ -82,14 +101,14 @@ class DashboardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             outside = Path(tmp)
             (outside / "map.md").write_text("問い: 外部の秘密\n", encoding="utf-8")
-            (self.root / "linked-topic").symlink_to(outside, target_is_directory=True)
+            symlink_or_skip(self, self.root / "linked-topic", outside, target_is_directory=True)
             topics = dash.collect(self.root, [])
             self.assertNotIn("linked-topic", [t["slug"] for t in topics])
             self.assertEqual(self.request("/linked-topic/map.md?k=kk")[0], 404)
             for name in ("map.md", "log.md", "digest.html", "report.html", "queries.jsonl", "digest.json"):
                 path = self.root / "new-topic" / name
                 path.unlink(missing_ok=True)
-                path.symlink_to(outside / "map.md")
+                symlink_or_skip(self, path, outside / "map.md")
             topics = dash.collect(self.root, [])
             topic = next(t for t in topics if t["slug"] == "new-topic")
             self.assertEqual(topic["question"], "")
@@ -117,7 +136,7 @@ class DashboardTests(unittest.TestCase):
                 dest = Path(tmp) / "bundle"
                 target = dest / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.symlink_to(outside if relative in (".", "new-topic") else marker)
+                symlink_or_skip(self, target, outside if relative in (".", "new-topic") else marker)
                 topics = dash.collect(self.root, [])
                 with self.assertRaisesRegex(ValueError, "シンボリックリンク"):
                     dash.write_bundle(topics, self.root, dest)
@@ -136,7 +155,7 @@ class DashboardTests(unittest.TestCase):
             outside = Path(tmp) / "secret"
             outside.write_text("変えない", encoding="utf-8")
             old_tmp = self.root / ".index.html.tmp"
-            old_tmp.symlink_to(outside)
+            symlink_or_skip(self, old_tmp, outside)
             with patch("sys.argv", ["dashboard.py", str(self.root)]), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(dash.main(), 0)
             index = self.root / "index.html"
@@ -214,7 +233,16 @@ class DashboardTests(unittest.TestCase):
     def test_unsafe_slugs_cannot_enter_current_item_css(self):
         import re
         for slug in ('bad"].on{color:red}', "<style>", "bad\\slug", "bad name"):
-            (self.root / slug).mkdir()
+            # Windows ではフォルダ名に " や < を使えず、\ は区切りになる。その OS で作れない名前の調査は
+            # 現れようがないので作らずに進む（\ を区切りとして作ると、安全な名前の bad ができてしまう）
+            if os.sep in slug or (os.altsep and os.altsep in slug):
+                continue
+            try:
+                (self.root / slug).mkdir()
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != WINERROR_INVALID_NAME:
+                    raise
+                continue
         topics = dash.collect(self.root, [])
         self.assertEqual({t["slug"] for t in topics}, {"new-topic", "empty-topic"})
         malicious = 'x</style><script>alert(1)</script>"'
