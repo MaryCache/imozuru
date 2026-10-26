@@ -57,7 +57,8 @@ Add this repository as a marketplace and install the plugin.
 /plugin install imozuru@imozuru
 ```
 
-The plugin carries no version number, so every commit to main counts as a new version.
+The plugin carries a version number, and users receive updates only when a release raises it.
+The `main` branch always matches the latest release; work in progress lives on the `dev` branch.
 To stay up to date automatically, turn on auto-update for imozuru in the marketplace screen of `/plugin`.
 To update by hand, run `claude plugin marketplace update imozuru`.
 

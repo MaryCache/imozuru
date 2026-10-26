@@ -1,5 +1,6 @@
 {
   "name": "imozuru",
+  "version": "2.1.0",
   "description": "知らない分野を、原文にたどりつくまで芋づる式に掘るスキル",
   "skills": "./skills/",
   "author": {

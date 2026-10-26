@@ -3,11 +3,14 @@
 imozuruのバージョンごとの変更を記録します。
 書式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、バージョン番号は [セマンティック バージョニング](https://semver.org/lang/ja/) に沿っています。
 
-プラグインの `plugin.json` にはバージョン番号を書いていません。
-mainにコミットが入るたびに、使っている人へ更新が届きます。
-バージョン番号はまとまった変更の区切りを示すために、この変更履歴とgitのタグ（`v2.0.0` など）だけに付けます。
+プラグインの `plugin.json` にバージョン番号を書いています（2.1.0から）。
+使っている人へ更新が届くのは、この番号を上げたリリースのときだけです。
+日々の直しは `dev` の枝に入れ、リリースのときに `main` へ合わせて、gitのタグ（`v2.1.0` など）とGitHubのリリースを付けます。
+2.0.0までは番号を書いておらず、mainにコミットが入るたびに更新が届いていました。
 
 ## [未公開]
+
+## [2.1.0] - 2026-10-26
 
 ### 追加
 
@@ -128,6 +131,7 @@ AIの判断能力は形式知・ノウハウを収集することで強化され
 - 検索結果から来るURL・本文・フィードを、他人が細工したものとして扱う。
 - 文字の層が無いPDFのOCRで、言語データから言語を選び、意味をなさない読み取りを失敗として扱う（#11）。
 
-[未公開]: https://github.com/MaryCache/imozuru/compare/v2.0.0...HEAD
+[未公開]: https://github.com/MaryCache/imozuru/compare/v2.1.0...dev
+[2.1.0]: https://github.com/MaryCache/imozuru/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/MaryCache/imozuru/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/MaryCache/imozuru/releases/tag/v1.0.0
