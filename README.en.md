@@ -109,6 +109,9 @@ This example enables both and saves results to `./research/react/` inside the wo
 codex --search exec -s workspace-write -c sandbox_workspace_write.network_access=true '$imozuru dig into this field: state management in React. Save results to ./research/react'
 ```
 
+`codex exec` runs inside a git repository or a trusted directory.
+To run it anywhere else, add `--skip-git-repo-check` after `exec`.
+
 ## Requirements
 
 The scripts run on the Python 3.10+ standard library alone, and use the following commands when they are installed.

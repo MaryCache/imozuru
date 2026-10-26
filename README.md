@@ -106,6 +106,9 @@ Web検索と、原文を取得するスクリプトのネットワーク接続�
 codex --search exec -s workspace-write -c sandbox_workspace_write.network_access=true '$imozuru 芋づる式に調べて: Reactの状態管理。保存先は ./research/react にして'
 ```
 
+`codex exec` は、gitリポジトリか信頼済みのフォルダの中で動かします。
+それ以外の場所で動かすときは、`exec` のあとに `--skip-git-repo-check` を付けてください。
+
 ## 必要なもの
 
 スクリプトはPython 3.10以上の標準ライブラリだけで動き、次のコマンドは入っていれば使います。
