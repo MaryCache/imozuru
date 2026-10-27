@@ -1054,7 +1054,7 @@ def valid_source_name(name: str) -> bool:
     return (bool(name.strip(" .")) and name == name.rstrip(" .")
             and not any(c in name for c in "/\\:<>\"|?*")
             and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name)
-            and not re.search(r"[‎‏‪-‮⁦-⁩]", name)
+            and not re.search(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", name)
             and device not in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
             and not re.fullmatch(r"(?:COM|LPT)[1-9¹²³]", device))
 
