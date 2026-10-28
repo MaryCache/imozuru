@@ -118,6 +118,37 @@ class FileBoundaryTests(unittest.TestCase):
                 q = {"file": "paper.txt", "line": 1, "end": 2, "text": text}
                 self.assertEqual(report.verify(self.sources, q)[0], expected)
 
+    def test_report_keeps_line_start_minus_in_markdown_sources(self):
+        """text/plain も .md で保存される。.md でも、2行目の行頭の負号を落とした抜き書きは通さない（#19）。"""
+        (self.sources / "measurement.md").write_text("Change is\n- 5 mg.\n", encoding="utf-8")
+        for text, expected in (("Change is 5 mg.", False), ("Change is - 5 mg.", True)):
+            with self.subTest(text=text):
+                q = {"file": "measurement.md", "line": 1, "end": 2, "text": text}
+                self.assertEqual(report.verify(self.sources, q)[0], expected)
+
+    def test_report_keeps_minus_on_first_line(self):
+        """原文の1行目が「- 5 mg.」のとき、負号の後ろから写した抜き書きは .txt でも .md でも通さない（#19）。"""
+        for name in ("first.txt", "first.md"):
+            (self.sources / name).write_text("- 5 mg.\n", encoding="utf-8")
+            for text, expected in (("5 mg.", False), ("- 5 mg.", True)):
+                with self.subTest(name=name, text=text):
+                    q = {"file": name, "line": 1, "text": text}
+                    self.assertEqual(report.verify(self.sources, q)[0], expected)
+        # PDF の負号は U+2212 のことがある。「…」で区切った後ろの区切りも同じ扱い
+        (self.sources / "unicode-minus.txt").write_text("Change is −5 mg.\n", encoding="utf-8")
+        q = {"file": "unicode-minus.txt", "line": 1, "text": "Change is … 5 mg."}
+        self.assertFalse(report.verify(self.sources, q)[0])
+
+    def test_report_needs_marker_for_list_items_starting_with_digits(self):
+        """数字で始まる Markdown の項目は、負号と見分けられないので「- 」ごと写したときだけ通す。"""
+        (self.sources / "reasons.md").write_text("# Why\n\n- 5 reasons to try\n- Easy setup\n", encoding="utf-8")
+        cases = {"- 5 reasons to try Easy setup": True, "5 reasons to try Easy setup": False,
+                 "Easy setup": True}
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                q = {"file": "reasons.md", "line": 3, "end": 4, "text": text}
+                self.assertEqual(report.verify(self.sources, q)[0], expected)
+
     def test_failed_report_keeps_prior_content(self):
         (self.sources / "paper.md").write_text("Original sentence", encoding="utf-8")
         data = {"title": "Test", "question": "Q", "stopped": "Done", "claims": [

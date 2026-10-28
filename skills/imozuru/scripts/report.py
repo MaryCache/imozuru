@@ -42,10 +42,15 @@ OLD_STATUS = {"付いた": "根拠あり", "一部だけ": "一部のみ", "付�
 # 前後に見せる行数。抜き書きがどんな流れの中にあったかを、ページの中で開いて確かめられるように。
 CONTEXT_LINES = 6
 
+# 負号として扱う字（PDF は U+2212 を使うことがある）と、その後ろで符号つきの数になりうる字
+MINUS = ("-", "\u2212")
+SIGNED_START = "0123456789０１２３４５６７８９."
+
 
 def norm(s: str) -> str:
-    """照合用に空白・改行・箇条書きの印をそろえる。文字そのものは変えない。"""
-    s = re.sub(r"(?m)^\s*[-*]\s+", " ", s)
+    """照合用に空白・改行・箇条書きの印をそろえる。文字そのものは変えない。
+    数字か小数点が続く行頭の「- 」は負号かもしれないので残す（#19）"""
+    s = re.sub(r"(?m)^\s*(?:\*|-(?!\s*[\d.]))\s+", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -79,9 +84,11 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
     # スペースでつないでから整えると、行頭の印は1行目のものしか消えない。2行目より後の「- 」が残り、
     # 箇条書きにまたがる抜き書きが落ちた（penpenguin の記事・2026-10-17）。
     # Markdown の原文に限り、行ごとに印を消した形でも照らす。Markdown の行頭の「- 」はリストの印で、
-    # HTML から起こした .md は段落が1行にまとまる。PDF から起こした .txt では行頭の「- 」が負号のことがあり、
-    # 消すと「- 5 mg」を「5 mg」と写した抜き書きまで通る（2026-10-26 のレビュー）ので、従来の形だけで照らす。
-    # 従来の形を残すのは、印ごと写した前からの抜き書きを落とさないため
+    # HTML から起こした .md は段落が1行にまとまる。従来の形を残すのは、印ごと写した前からの抜き書きを落とさないため。
+    # 行頭の「- 」は負号のことがあり、消すと「- 5 mg」を「5 mg」と写した抜き書きまで通る（2026-10-26 のレビュー）。
+    # 拡張子では見分けられない。fetch.py は text/plain も .md で保存し、「- 5 mg」は Markdown としても
+    # 負号か印か決まらない（#19）。そこで norm() は数字の前の「- 」を消さず、_in_order() は負号の直後から
+    # 始まる抜き書きを通さない。数字で始まる項目は「- 」ごと写さないと照合できないが、符号を落とすよりよい
     window = lines[start - 1:end]
     regions = [norm(" ".join(window))]
     if path.suffix.lower() == ".md":
@@ -97,10 +104,13 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
 
 
 def _in_order(pieces: list[str], region: str) -> bool:
-    """区切りがどれも、前の区切りより後ろに region の中で現れるか。"""
+    """区切りがどれも、前の区切りより後ろに region の中で現れるか。
+    数字か小数点で始まる区切りは、負号の直後の位置では数えない（「- 5 mg」の中の「5 mg」を通さない・#19）"""
     pos = 0
     for piece in pieces:
         at = region.find(piece, pos)
+        while at >= 0 and piece[0] in SIGNED_START and region[:at].rstrip().endswith(MINUS):
+            at = region.find(piece, at + 1)
         if at < 0:
             return False
         pos = at + len(piece)
