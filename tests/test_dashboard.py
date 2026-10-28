@@ -282,6 +282,25 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(t["run"]["周"], "2")
         self.assertEqual(t["reason_class"], "論点充足")
 
+    def test_same_day_topics_are_newest_first(self):
+        """同じ日の調査は、始めた時刻（最初に保存した原文）の新しい順。slug の順には引きずられない。"""
+        base = 1_800_000_000
+        for slug, hour, has_sources in (("a-late", 20, True), ("z-early", 9, True), ("m-noon", 12, False)):
+            t = self.root / slug
+            (t / "sources").mkdir(parents=True)
+            (t / "log.md").write_text("# log\n\n## 0周目（2026-10-28）\n", encoding="utf-8")
+            (t / "map.md").write_text("# map\n", encoding="utf-8")
+            later = base + 23 * 3600  # map.md と log.md は調べるあいだ書き足すので、始めた時刻より後になる
+            os.utime(t / "log.md", (later, later))
+            os.utime(t / "map.md", (base + hour * 3600, base + hour * 3600) if not has_sources else (later, later))
+            if has_sources:
+                for i, name in enumerate(("first.md", "second.md")):
+                    (t / "sources" / name).write_text("x", encoding="utf-8")
+                    stamp = base + hour * 3600 + i * 600
+                    os.utime(t / "sources" / name, (stamp, stamp))
+        order = [t["slug"] for t in dash.collect(self.root, []) if t["date"] == "2026-10-28"]
+        self.assertEqual(order, ["a-late", "m-noon", "z-early"])
+
     def test_topic_without_records_is_marked_not_zero(self):
         t = self.collect()["empty-topic"]
         self.assertIsNone(t["rounds"])

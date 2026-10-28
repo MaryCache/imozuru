@@ -466,10 +466,33 @@ def serve(root: Path, runs: list[dict], port: int) -> int:
     return 0
 
 
+def started_at(d: Path) -> float:
+    """調査を始めた時刻の目安。sources/ で一番古いファイル（最初に保存した原文）、無ければ map.md・log.md の古いほう。
+    記録（log.md・jsonl）には時刻が無いので、ファイルの時刻を使う。リンクはたどらない。何も無ければ 0"""
+    times = []
+    try:
+        with os.scandir(d / "sources") as it:
+            times = [e.stat(follow_symlinks=False).st_mtime for e in it if e.is_file(follow_symlinks=False)]
+    except OSError:
+        pass
+    if not times:
+        for name in ("map.md", "log.md"):
+            try:
+                st = (d / name).lstat()
+            except OSError:
+                continue
+            if not (d / name).is_symlink():
+                times.append(st.st_mtime)
+    return min(times, default=0.0)
+
+
 def collect(root: Path, runs: list[dict]) -> list[dict]:
     topics = [topic_info(d, runs) for d in sorted(root.iterdir())
               if not d.is_symlink() and d.is_dir() and SLUG.fullmatch(d.name)]
-    return sorted(topics, key=lambda t: (t["date"] or "0000", t["slug"]), reverse=True)
+    # 日付は日までしか無い。同じ日に始めた調査は、始めた時刻の新しい順に並べる
+    # （前は slug の逆順で、新しい調査が下に来ることがあった・2026-10-28 かしぇ）
+    started = {t["slug"]: started_at(root / t["slug"]) for t in topics}
+    return sorted(topics, key=lambda t: (t["date"] or "0000", started[t["slug"]], t["slug"]), reverse=True)
 
 
 def main() -> int:
