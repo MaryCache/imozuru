@@ -322,7 +322,7 @@ class OutputSafetyTests(unittest.TestCase):
         self.assertIn(r"[d \[e\]](https://example.test/ok%20%281%29)", text)
 
     def test_source_names(self):
-        for name in ("a?b", "a*b", "a<b", 'a"b', "a|b", "report‮gpj.md"):
+        for name in ("a?b", "a*b", "a<b", 'a"b', "a|b", "report\u202egpj.md"):
             with self.subTest(name=name):
                 self.assertFalse(fetch.valid_source_name(name))
 
@@ -619,7 +619,7 @@ class DeepSeekSplitReviewTests(unittest.TestCase):
     def test_bidi_controls_are_removed(self):
         for module in (fetch, watch, chain):
             with self.subTest(module=module.__name__):
-                self.assertEqual(module.clean("abc‮def​g﻿"), "abc def g")
+                self.assertEqual(module.clean("abc\u202edef\u200bg\ufeff"), "abc def g")
                 # 絵文字の並びや一部の文字に要る ZWJ・ZWNJ は残す
                 self.assertEqual(module.clean("a‍b‌c"), "a‍b‌c")
 
