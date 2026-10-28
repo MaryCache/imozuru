@@ -35,6 +35,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from xml.parsers import expat
@@ -498,10 +499,15 @@ def pdf_text_command(pdf: Path, out: Path) -> list[str] | None:
         # 子の処理の作業フォルダは、取ってきたファイルの無いこのスクリプトの置き場にする。
         # python -c は作業フォルダから先に読み込むので、ダウンロードの隣で動かさない
         return [sys.executable, "-c", PDFMINER, str(pdf), str(out)]
-    # pipx などで、コマンドだけ PATH にある。Windows は .py を直接は動かせないので使わない
-    if os.name != "nt" and not missing("pdf2txt.py"):
+    if has_pdf2txt():
         return ["pdf2txt.py", "-o", str(out), str(pdf)]
     return None
+
+
+def has_pdf2txt() -> bool:
+    """pdfminer.six のコマンド pdf2txt.py を使えるか。pipx などで、コマンドだけ PATH にあることがある。
+    Windows は .py を直接は動かせないので使わない"""
+    return os.name != "nt" and not missing("pdf2txt.py")
 
 
 def pdf_to_text(pdf: Path) -> str:
@@ -1234,7 +1240,7 @@ def verify_and_save(name: str, text: str, saved: Path, kept: Path, destination: 
         reason = f"壁に当たった（{wall}）" if wall else f"本文が短すぎる（{len(text)}文字）"
         # PDF の文字起こしに要るコマンドが欠けていたなら、短い理由はたいていそれ
         lacking = missing("pdftotext", "pdftoppm", "tesseract") if saved.suffix == ".pdf" else []
-        if "pdftotext" in lacking and pdf_text_command(saved, kept) is not None:
+        if "pdftotext" in lacking and (has_pdfminer() or has_pdf2txt()):
             lacking.remove("pdftotext")  # 代わりの pdfminer.six で文字の層は読んだ。足りないのは OCR の道具
         if lacking:
             reason += f"。{'・'.join(lacking)} が無い"
@@ -1284,7 +1290,8 @@ def record_fetch(sources: Path, name: str, url: str, printed: str) -> None:
     if not lines:
         return
     parts = lines[-1].split("\t")
-    entry = {"url": url, "name": name, "status": parts[0]}
+    # 時刻はダッシュボードが同じ日の調査を始めた順に並べるのに使う。ファイルの時刻は clone やコピーで変わる
+    entry = {"url": url, "name": name, "status": parts[0], "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     if parts[0] == "OK" and len(parts) > 2:
         entry["file"] = Path(parts[2]).name
     elif len(parts) > 2:

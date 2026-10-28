@@ -392,6 +392,8 @@ def build(topic: Path, check_only: bool) -> int:
     if bad:
         print("根拠の照合に通らない文がある（根拠が無いか、引用が原文と合わない）:")
         print("\n".join("  " + b for b in bad))
+        if any("原文に見つからない引用" in b for b in bad):
+            print(report.MINUS_HINT)
         return 1
     print(f"照合 OK: 解説の文がすべて原文の引用を持つ・検索の記録 {len(records)}本")
     if check_only:

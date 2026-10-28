@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -259,6 +260,7 @@ class FetchLogTests(unittest.TestCase):
             rows = [json.loads(l) for l in (sources.parent / "fetch-log.jsonl").read_text().splitlines()]
             self.assertEqual(rows[0]["status"], "FAIL")
             self.assertEqual(rows[0]["url"], "file:///etc/passwd")
+            self.assertIsNotNone(datetime.fromisoformat(rows[0]["at"]).tzinfo)  # 並べ替えに使う時刻
             self.assertEqual(list(sources.iterdir()), [])
 
     def test_fetch_log_is_skipped_outside_a_sources_folder(self):

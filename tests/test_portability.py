@@ -126,7 +126,14 @@ class PdfToTextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fetch.has_pdfminer.cache_clear()
             self.addCleanup(fetch.has_pdfminer.cache_clear)
-            with patch.dict(os.environ, {"PYTHONPATH": tmp}):
+            # 本物の pdfminer.six が --user に入っている機械でも「無い」側を確かめられるよう、ユーザーの置き場を見せない。
+            # 仮想環境や Python 本体の側に入っているときは隠せないので、この試験を飛ばす
+            env = {"PYTHONPATH": tmp, "PYTHONNOUSERSITE": "1"}
+            with patch.dict(os.environ, env):
+                if fetch.has_pdfminer():
+                    self.skipTest("pdfminer.six が Python 本体の側に入っている")
+            fetch.has_pdfminer.cache_clear()
+            with patch.dict(os.environ, env):
                 self.assertFalse(fetch.has_pdfminer())
                 fake = Path(tmp) / "pdfminer"
                 fake.mkdir()

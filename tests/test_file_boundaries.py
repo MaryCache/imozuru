@@ -149,6 +149,37 @@ class FileBoundaryTests(unittest.TestCase):
                 q = {"file": "reasons.md", "line": 3, "end": 4, "text": text}
                 self.assertEqual(report.verify(self.sources, q)[0], expected)
 
+    def test_report_accepts_numbers_after_hyphens_inside_words(self):
+        """英数字の直後のハイフンは語の一部。その後ろから写した抜き書きは通す（2.1.0 で通っていた）。
+        2段組の PDF では、行末で切った語「period-」の直後に左の段の数が来る"""
+        (self.sources / "words.txt").write_text(
+            "COVID-19 patients were enrolled.\nAged 18-65 years.\n"
+            "over a 40-day period-            0% to 30% of runs\n", encoding="utf-8")
+        for line, text in ((1, "19 patients were enrolled."), (2, "65 years."), (3, "0% to 30% of runs")):
+            with self.subTest(text=text):
+                self.assertTrue(report.verify(self.sources, {"file": "words.txt", "line": line, "text": text})[0])
+
+    def test_report_minus_needs_a_number_after_it(self):
+        """「.」だけでは数にしない。「- .NET 8」は箇条書きの印を落として写しても通し、「- .5 mg」は通さない。"""
+        (self.sources / "dotnet.md").write_text("# Notes\n\n- .NET 8 adds native AOT\n- .5 mg daily\n",
+                                                 encoding="utf-8")
+        cases = {(3, ".NET 8 adds native AOT"): True, (4, ".5 mg daily"): False, (4, "- .5 mg daily"): True}
+        for (line, text), expected in cases.items():
+            with self.subTest(text=text):
+                q = {"file": "dotnet.md", "line": line, "text": text}
+                self.assertEqual(report.verify(self.sources, q)[0], expected)
+
+    def test_report_keeps_fullwidth_minus_and_en_dash(self):
+        """全角の負号と en dash も負号として扱う。和文の「は－5」は語の中のハイフンにしない。"""
+        (self.sources / "signs.txt").write_text(
+            "気温は－5度だった。\nChange was –3 points.\nSeasons 2019–2020 ended.\n", encoding="utf-8")
+        cases = {(1, "5度だった。"): False, (1, "気温は－5度だった。"): True,
+                 (2, "3 points."): False, (3, "2020 ended."): True}
+        for (line, text), expected in cases.items():
+            with self.subTest(text=text):
+                q = {"file": "signs.txt", "line": line, "text": text}
+                self.assertEqual(report.verify(self.sources, q)[0], expected)
+
     def test_failed_report_keeps_prior_content(self):
         (self.sources / "paper.md").write_text("Original sentence", encoding="utf-8")
         data = {"title": "Test", "question": "Q", "stopped": "Done", "claims": [

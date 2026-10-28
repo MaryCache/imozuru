@@ -119,7 +119,7 @@ The scripts run on the Python 3.10+ standard library alone, and use the followin
 
 | Command | Used for | When missing |
 |---|---|---|
-| `pdftotext` (poppler or Xpdf) | Extracting text from PDFs | Uses [pdfminer.six](https://github.com/pdfminer/pdfminer.six) instead when it is installed (install it into the Python that runs the scripts with `python3 -m pip install --user pdfminer.six`; for environments where poppler cannot be installed). With neither, the fetch reports `FAIL` |
+| `pdftotext` (poppler or Xpdf) | Extracting text from PDFs | Uses [pdfminer.six](https://github.com/pdfminer/pdfminer.six) instead when it is installed (install it into the Python that runs the scripts with `python3 -m pip install --user pdfminer.six`; for environments where poppler cannot be installed). A `pdf2txt.py` on the PATH also works (not on Windows). It is slower than pdftotext, so a large PDF may hit the time limit and report `FAIL`. With none of these, the fetch reports `FAIL` |
 | `pdftoppm` (poppler or Xpdf) and `tesseract` | OCR for old PDFs with no text layer | That PDF reports `FAIL` |
 | `tesseract` language data `jpn` and `jpn_vert` | Reading Japanese scans, both horizontal and vertical (used automatically when installed; set `IMOZURU_OCR_LANG`, e.g. `jpn+eng`, to choose) | OCR runs in English only; a Japanese PDF reports `FAIL` because the recognition confidence is low |
 | `yt-dlp` | Downloading YouTube captions | Videos report `FAIL` |

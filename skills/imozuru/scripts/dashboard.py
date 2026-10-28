@@ -28,6 +28,7 @@ import shutil
 import sys
 import tempfile
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -127,12 +128,15 @@ def read(path: Path) -> str:
 
 
 def load_jsonl(path: Path) -> list[dict]:
+    """1行1件の記録を読む。読めない行と、オブジェクトでない行は飛ばす（1行の崩れで一覧ごと落とさない）"""
     rows = []
     for line in read(path).splitlines():
         try:
-            rows.append(json.loads(line))
+            row = json.loads(line)
         except ValueError:
             continue
+        if isinstance(row, dict):
+            rows.append(row)
     return rows
 
 
@@ -467,9 +471,12 @@ def serve(root: Path, runs: list[dict], port: int) -> int:
 
 
 def started_at(d: Path) -> float:
-    """調査を始めた時刻の目安。sources/ で一番古いファイル（最初に保存した原文）、無ければ map.md・log.md の古いほう。
-    記録（log.md・jsonl）には時刻が無いので、ファイルの時刻を使う。リンクはたどらない。何も無ければ 0"""
-    times = []
+    """調査を始めた時刻の目安。取得の記録（fetch-log.jsonl）に時刻があれば一番早いもの。
+    2.2.0 より前の記録には時刻が無いので、sources/ で一番古いファイル（最初に保存した原文）、無ければ map.md・log.md の古いほう。
+    ファイルの時刻は clone やコピーで変わるので、記録の時刻を先に使う。リンクはたどらない。何も無ければ 0"""
+    times = [t for f in load_jsonl(d / "fetch-log.jsonl") if (t := _epoch(f.get("at"))) is not None]
+    if times:
+        return min(times)
     try:
         with os.scandir(d / "sources") as it:
             times = [e.stat(follow_symlinks=False).st_mtime for e in it if e.is_file(follow_symlinks=False)]
@@ -484,6 +491,16 @@ def started_at(d: Path) -> float:
             if not (d / name).is_symlink():
                 times.append(st.st_mtime)
     return min(times, default=0.0)
+
+
+def _epoch(at: object) -> float | None:
+    """取得の記録の時刻（ISO 8601）を秒にする。読めなければ None"""
+    if not isinstance(at, str):
+        return None
+    try:
+        return datetime.fromisoformat(at).timestamp()
+    except ValueError:
+        return None
 
 
 def collect(root: Path, runs: list[dict]) -> list[dict]:

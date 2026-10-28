@@ -42,15 +42,22 @@ OLD_STATUS = {"付いた": "根拠あり", "一部だけ": "一部のみ", "付�
 # 前後に見せる行数。抜き書きがどんな流れの中にあったかを、ページの中で開いて確かめられるように。
 CONTEXT_LINES = 6
 
-# 負号として扱う字（PDF は U+2212 を使うことがある）と、その後ろで符号つきの数になりうる字
-MINUS = ("-", "\u2212")
-SIGNED_START = "0123456789０１２３４５６７８９."
+# 負号として扱う字。PDF は U+2212 を、和文は全角の U+FF0D を、組版された英文は en dash（U+2013）を使うことがある
+MINUS = ("-", "\u2212", "\uff0d", "\u2013")
+# 符号つきの数の始まり。「.」だけでは数にしない（「- .NET 8」の「.NET」を負号の後ろと見なさない）
+SIGNED_NUMBER = re.compile(r"[.．]?\d")
+# 負号の直前にこの字があれば、語の中のハイフン（COVID-19・18-65・行末で切った「period-」）として扱う。
+# 和文の「気温は－5度」を通さないよう、仮名や漢字は含めない
+WORD_CHAR = re.compile(r"[A-Za-z0-9０-９Ａ-Ｚａ-ｚ]")
+# 照合に落ちたときの案内。行番号のずれと思って行を直しても通らないので、負号の決まりをここで知らせる
+MINUS_HINT = ("数で始まる抜き書きは、原文でその直前に負号（-・−・－・–）があれば負号ごと写す。"
+              "数で始まる箇条書きの項目も「- 」ごと写す（負号と見分けられないため）")
 
 
 def norm(s: str) -> str:
     """照合用に空白・改行・箇条書きの印をそろえる。文字そのものは変えない。
-    数字か小数点が続く行頭の「- 」は負号かもしれないので残す（#19）"""
-    s = re.sub(r"(?m)^\s*(?:\*|-(?!\s*[\d.]))\s+", " ", s)
+    数が続く行頭の「- 」は負号かもしれないので残す（#19）"""
+    s = re.sub(r"(?m)^\s*(?:\*|-(?!\s*[.．]?\d))\s+", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -105,16 +112,23 @@ def verify(src_dir: Path, q: dict) -> tuple[bool, list[str], int, int]:
 
 def _in_order(pieces: list[str], region: str) -> bool:
     """区切りがどれも、前の区切りより後ろに region の中で現れるか。
-    数字か小数点で始まる区切りは、負号の直後の位置では数えない（「- 5 mg」の中の「5 mg」を通さない・#19）"""
+    数で始まる区切りは、負号の直後の位置では数えない（「- 5 mg」の中の「5 mg」を通さない・#19）"""
+    signed = [bool(SIGNED_NUMBER.match(p)) for p in pieces]
     pos = 0
-    for piece in pieces:
+    for piece, number in zip(pieces, signed):
         at = region.find(piece, pos)
-        while at >= 0 and piece[0] in SIGNED_START and region[:at].rstrip().endswith(MINUS):
+        while at >= 0 and number and _after_minus(region, at):
             at = region.find(piece, at + 1)
         if at < 0:
             return False
         pos = at + len(piece)
     return True
+
+
+def _after_minus(region: str, at: int) -> bool:
+    """region の at の直前（空白を除く）が負号か。英数字の直後のハイフンは語の一部なので負号にしない"""
+    head = region[:at].rstrip()
+    return head.endswith(MINUS) and not WORD_CHAR.fullmatch(head[-2:-1] or " ")
 
 
 def esc(s: str) -> str:
@@ -351,6 +365,7 @@ def main() -> int:
     if bad:
         print("原文に見つからない抜き書きがある（言い換えか、行番号のずれ）:")
         print("\n".join("  " + b for b in bad))
+        print(MINUS_HINT)
         return 1
     total = sum(len(g.get("quotes", [])) for _, g in groups)
     print(f"照合 OK: 抜き書き {total} 件がすべて原文のとおり")

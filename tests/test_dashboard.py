@@ -300,6 +300,13 @@ class DashboardTests(unittest.TestCase):
                     os.utime(t / "sources" / name, (stamp, stamp))
         order = [t["slug"] for t in dash.collect(self.root, []) if t["date"] == "2026-10-28"]
         self.assertEqual(order, ["a-late", "m-noon", "z-early"])
+        # 取得の記録に時刻があれば、ファイルの時刻より先に使う（clone やコピーでファイルの時刻は変わる）
+        log = self.root / "z-early" / "fetch-log.jsonl"
+        # base は 2027-01-15T08:00Z。記録の時刻 base+22時間は a-late の原文（base+20時間）より後
+        log.write_text('{"status": "OK", "at": "2027-01-16T06:00:00+00:00"}\n["not a row"]\n'
+                       '{"status": "FAIL", "at": "broken"}\n', encoding="utf-8")
+        order = [t["slug"] for t in dash.collect(self.root, []) if t["date"] == "2026-10-28"]
+        self.assertEqual(order, ["z-early", "a-late", "m-noon"])
 
     def test_topic_without_records_is_marked_not_zero(self):
         t = self.collect()["empty-topic"]
