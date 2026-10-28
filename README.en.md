@@ -72,6 +72,47 @@ npx skills add MaryCache/imozuru
 
 To install by hand, copy `skills/imozuru/` to `~/.claude/skills/imozuru/`.
 
+### Codex CLI
+
+Copy `skills/imozuru/` to `~/.agents/skills/imozuru/`, or link it there.
+To use it in just one repository, put it in that repository's `.agents/skills/imozuru/`.
+
+On macOS / Linux, you can create a link like this.
+
+```sh
+git clone https://github.com/MaryCache/imozuru ~/src/imozuru
+mkdir -p ~/.agents/skills && ln -s ~/src/imozuru/skills/imozuru ~/.agents/skills/imozuru
+```
+
+On Windows (PowerShell), replace `<clone-path>` with the absolute path to your clone.
+Creating a junction does not require administrator rights.
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agents\skills"
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.agents\skills\imozuru" -Target "<clone-path>\skills\imozuru"
+```
+
+If you installed with a link, run `git pull` in the clone to update.
+
+In Codex's interactive screen, use `$imozuru` instead of `/imozuru`.
+You can list skills with `/skills`, and Codex can also select the skill automatically when a request matches its description.
+
+```text
+$imozuru dig into this field: state management in React
+$imozuru watch react
+```
+
+Use `codex exec` to run without the interactive screen.
+Web search and network access for the scripts that fetch sources are needed.
+This example enables both and saves results to `./research/react/` inside the working directory.
+
+```sh
+codex --search exec -s workspace-write -c sandbox_workspace_write.network_access=true '$imozuru dig into this field: state management in React. Save results to ./research/react'
+```
+
+`codex exec` runs inside a git repository or a trusted directory.
+To run it anywhere else, add `--skip-git-repo-check` after `exec`.
+
 ## Requirements
 
 The scripts run on the Python 3.10+ standard library alone, and use the following commands when they are installed.
@@ -88,7 +129,7 @@ The scripts run on the Python 3.10+ standard library alone, and use the followin
 
 ## Usage
 
-Ask Claude Code something like this.
+Ask Claude Code something like this. In Codex CLI, you can prefix the request with `$imozuru`.
 
 ```
 芋づる式に調べて: 歌ってみたの MIX で、上手い人がどういう順番で処理しているか

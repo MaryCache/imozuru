@@ -69,6 +69,47 @@ npx skills add MaryCache/imozuru
 
 手動の場合は、`skills/imozuru/` を `~/.claude/skills/imozuru/` にコピーしてください。
 
+### Codex CLI
+
+`skills/imozuru/` を `~/.agents/skills/imozuru/` にコピーするか、リンクを作ります。
+リポジトリごとに使いたい場合は、そのリポジトリの `.agents/skills/imozuru/` に置いてください。
+
+macOS / Linuxでは、次のようにリンクを作れます。
+
+```sh
+git clone https://github.com/MaryCache/imozuru ~/src/imozuru
+mkdir -p ~/.agents/skills && ln -s ~/src/imozuru/skills/imozuru ~/.agents/skills/imozuru
+```
+
+Windows（PowerShell）では、`<clone先>` をcloneした場所の絶対パスに置き換えてください。
+ジャンクションは管理者権限なしで作れます。
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agents\skills"
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.agents\skills\imozuru" -Target "<clone先>\skills\imozuru"
+```
+
+リンクで入れた場合は、clone先で `git pull` を実行すると更新できます。
+
+Codexの対話画面では、`/imozuru` の代わりに `$imozuru` を使います。
+一覧は `/skills` で見られ、スキルの説明に合う頼み方なら自動でも選ばれます。
+
+```text
+$imozuru 芋づる式に調べて: Reactの状態管理
+$imozuru watch react
+```
+
+対話画面を開かずに動かすときは `codex exec` を使います。
+Web検索と、原文を取得するスクリプトのネットワーク接続が必要です。
+次の例は両方を有効にし、結果を作業フォルダ内の `./research/react/` に保存します。
+
+```sh
+codex --search exec -s workspace-write -c sandbox_workspace_write.network_access=true '$imozuru 芋づる式に調べて: Reactの状態管理。保存先は ./research/react にして'
+```
+
+`codex exec` は、gitリポジトリか信頼済みのフォルダの中で動かします。
+それ以外の場所で動かすときは、`exec` のあとに `--skip-git-repo-check` を付けてください。
+
 ## 必要なもの
 
 スクリプトはPython 3.10以上の標準ライブラリだけで動き、次のコマンドは入っていれば使います。
@@ -85,7 +126,7 @@ npx skills add MaryCache/imozuru
 
 ## 使い方
 
-Claude Codeで、次のように頼みます。
+Claude Codeで、次のように頼みます。Codex CLIでは、頼み方の先頭に `$imozuru` を付けられます。
 
 ```
 芋づる式に調べて: 歌ってみたのMIXで、上手い人がどういう順番で処理しているか
