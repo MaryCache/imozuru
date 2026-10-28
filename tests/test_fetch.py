@@ -21,6 +21,26 @@ PUBLIC_IP = "93.184.215.14"
 fetch.resolve = lambda host: {PUBLIC_IP}
 
 
+class SourceNameTests(unittest.TestCase):
+    def test_rejects_all_bidi_controls_in_filename_pattern(self):
+        controls = [0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)]
+        for codepoint in controls:
+            with self.subTest(codepoint=f"U+{codepoint:04X}"):
+                self.assertFalse(fetch.valid_source_name(f"paper{chr(codepoint)}.md"))
+
+    def test_accepts_characters_adjacent_to_bidi_ranges(self):
+        for codepoint in (0x200D, 0x2010, 0x2029, 0x202F, 0x2065, 0x206A):
+            with self.subTest(codepoint=f"U+{codepoint:04X}"):
+                self.assertTrue(fetch.valid_source_name(f"paper{chr(codepoint)}.md"))
+
+    def test_fetch_source_contains_no_literal_bidi_controls(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        controls = [0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)]
+        for codepoint in controls:
+            with self.subTest(codepoint=f"U+{codepoint:04X}"):
+                self.assertNotIn(chr(codepoint), source)
+
+
 class FetchPreservationTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
