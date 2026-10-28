@@ -10,6 +10,8 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+## [2.2.0] - 2026-10-28
+
 ### 追加
 
 - Codex CLIでの入れ方と呼び方を、日本語・英語のREADMEに追加しました（#18）。
@@ -144,7 +146,8 @@ AIの判断能力は形式知・ノウハウを収集することで強化され
 - 検索結果から来るURL・本文・フィードを、他人が細工したものとして扱う。
 - 文字の層が無いPDFのOCRで、言語データから言語を選び、意味をなさない読み取りを失敗として扱う（#11）。
 
-[未公開]: https://github.com/MaryCache/imozuru/compare/v2.1.0...dev
+[未公開]: https://github.com/MaryCache/imozuru/compare/v2.2.0...dev
+[2.2.0]: https://github.com/MaryCache/imozuru/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/MaryCache/imozuru/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/MaryCache/imozuru/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/MaryCache/imozuru/releases/tag/v1.0.0
