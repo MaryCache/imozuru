@@ -13,6 +13,7 @@ imozuruのバージョンごとの変更を記録します。
 ### 追加
 
 - Codex CLIでの入れ方と呼び方を、日本語・英語のREADMEに追加しました（#18）。
+- `pdftotext` が無い環境で、[pdfminer.six](https://github.com/pdfminer/pdfminer.six) が入っていれば、それでPDFの本文を取り出すようにしました（#15）。popplerを入れられない環境でも、文字の層があるPDFは読めます。`pdftotext` と同じく別の処理として時間の上限つきで動かします。文字の層が無いPDFのOCRには、これまでどおり `pdftoppm` と `tesseract` が要ります。
 
 ### 修正
 

@@ -6,6 +6,7 @@ import http.server
 import importlib.util
 import io
 import locale
+import os
 import subprocess
 import sys
 import tempfile
@@ -90,6 +91,61 @@ class PdfToTextTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertEqual(args[args.index("-enc") + 1], "UTF-8")
         self.assertEqual(text, "Schizophrénie\n")
+
+    def test_pdfminer_is_used_without_pdftotext(self):
+        """pdftotext が無く pdfminer.six があれば、別の処理で pdfminer.six を動かす（#15）。
+        本物の代わりに extract_text だけの pdfminer を置き、子の処理が .txt を UTF-8 で書くところまで見る"""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "lib" / "pdfminer"
+            fake.mkdir(parents=True)
+            (fake / "__init__.py").write_text("", encoding="utf-8")
+            (fake / "high_level.py").write_text(
+                "def extract_text(path):\n    return 'Schizophrénie\\n' + open(path, 'rb').read()[:8].decode()\n",
+                encoding="utf-8")
+            pdf = Path(tmp) / "paper.pdf"
+            pdf.write_bytes(b"%PDF-1.4")
+            seen = []
+
+            def spy(cmd, **kwargs):
+                seen.append((cmd, kwargs.get("cwd")))
+                return real_run_tool(cmd, **kwargs)
+
+            real_run_tool = fetch.run_tool
+            with patch.object(fetch, "missing", side_effect=lambda *c: list(c)), \
+                    patch.object(fetch, "has_pdfminer", return_value=True), \
+                    patch.object(fetch, "run_tool", side_effect=spy), \
+                    patch.dict(os.environ, {"PYTHONPATH": str(fake.parent)}):
+                text = fetch.pdf_to_text(pdf)
+        self.assertEqual(text, "Schizophrénie\n%PDF-1.4")
+        cmd, cwd = seen[0]
+        self.assertEqual(cmd[:2], [sys.executable, "-c"])
+        self.assertEqual(Path(cwd), SCRIPTS)  # 取ってきたファイルの隣では動かさない
+
+    def test_has_pdfminer_probes_in_child(self):
+        """pdfminer.six の有無は子の処理で調べる。-I で動かした親からは見えない場所に入っていても見つける。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            fetch.has_pdfminer.cache_clear()
+            self.addCleanup(fetch.has_pdfminer.cache_clear)
+            with patch.dict(os.environ, {"PYTHONPATH": tmp}):
+                self.assertFalse(fetch.has_pdfminer())
+                fake = Path(tmp) / "pdfminer"
+                fake.mkdir()
+                (fake / "__init__.py").write_text("", encoding="utf-8")
+                (fake / "high_level.py").write_text("", encoding="utf-8")
+                fetch.has_pdfminer.cache_clear()
+                self.assertTrue(fetch.has_pdfminer())
+
+    def test_pdf2txt_command_and_no_tool(self):
+        """pdfminer.six を読み込めなくても PATH に pdf2txt.py があれば使う。何も無ければ動かさない。"""
+        pdf, out = Path("/x/a.pdf"), Path("/x/a.txt")
+        expected = None if os.name == "nt" else ["pdf2txt.py", "-o", str(out), str(pdf)]  # Windows は .py を動かせない
+        with patch.object(fetch, "has_pdfminer", return_value=False):
+            with patch.object(fetch, "missing", side_effect=lambda *c: [x for x in c if x != "pdf2txt.py"]):
+                self.assertEqual(fetch.pdf_text_command(pdf, out), expected)
+            with patch.object(fetch, "missing", side_effect=lambda *c: list(c)), \
+                    patch.object(fetch, "run_tool") as run:
+                self.assertEqual(fetch.pdf_to_text(Path("a.pdf")), "")
+                run.assert_not_called()
 
 
 class _Redirects(http.server.BaseHTTPRequestHandler):
@@ -201,8 +257,9 @@ class MissingCommandTests(unittest.TestCase):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(contextlib.redirect_stdout(self.stdout))
-        # どのコマンドも無い環境
+        # どのコマンドも無い環境（pdfminer.six も無い）
         self.stack.enter_context(patch.object(fetch, "missing", side_effect=lambda *c: list(c)))
+        self.stack.enter_context(patch.object(fetch, "has_pdfminer", return_value=False))
 
     def run_fetch(self, url):
         with patch.object(sys, "argv", ["fetch.py", str(self.sources), "paper", url]):
@@ -213,6 +270,14 @@ class MissingCommandTests(unittest.TestCase):
             self.assertEqual(self.run_fetch("https://example.test/scan.pdf"), 1)
         self.assertIn("pdftotext・pdftoppm・tesseract が無い", self.stdout.getvalue())
         self.assertEqual(list(self.sources.iterdir()), [])
+
+    def test_pdf_with_pdfminer_names_only_ocr_tools(self):
+        """pdfminer.six で文字の層を読めたなら、FAIL の理由に pdftotext を挙げない（#15）。"""
+        with patch.object(fetch, "has_pdfminer", return_value=True), \
+                patch.object(fetch, "run_tool", return_value=subprocess.CompletedProcess([], 0)), \
+                patch.object(fetch, "download", return_value=(b"%PDF-1.4\nscan", "application/pdf")):
+            self.assertEqual(self.run_fetch("https://example.test/scan.pdf"), 1)
+        self.assertIn("。pdftoppm・tesseract が無い", self.stdout.getvalue())
 
     def test_youtube_without_ytdlp_fails_with_reason(self):
         self.assertEqual(self.run_fetch("https://www.youtube.com/watch?v=example"), 1)

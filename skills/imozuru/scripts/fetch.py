@@ -19,6 +19,7 @@
 
 import codecs
 import contextlib
+import functools
 import http.client
 import io
 import ipaddress
@@ -467,17 +468,50 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
-def pdf_to_text(pdf: Path) -> str:
-    """pdftotext で段組みを保ったまま文字にする。行番号で原文を指せるように -layout を使う。
+# pdfminer.six で PDF を文字にする小さなプログラム。pdftotext と同じく別の処理で動かし、時間の上限で止められるようにする
+PDFMINER = ("import sys\nfrom pdfminer.high_level import extract_text\n"
+            "with open(sys.argv[2], 'w', encoding='utf-8', newline='\\n') as f:\n"
+            "    f.write(extract_text(sys.argv[1]))\n")
 
-    Xpdf の pdftotext（Git for Windows に入っている）は既定で Latin-1 を出すので、
-    -enc UTF-8 で出力の文字コードを決める。poppler の pdftotext も同じ引数を受け付ける（#3）。
+
+@functools.lru_cache(maxsize=None)
+def has_pdfminer() -> bool:
+    """文字にするときと同じ子の処理で、pdfminer.six を読み込めるか。
+    この処理の中で調べると、-I で動かしたときに pip install --user で入れたものが見えない"""
+    done = run_tool([sys.executable, "-c", "import pdfminer.high_level"], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, cwd=Path(__file__).resolve().parent)
+    return done is not None and done.returncode == 0
+
+
+def pdf_text_command(pdf: Path, out: Path) -> list[str] | None:
+    """PDF を文字にするコマンド。pdftotext が無ければ pdfminer.six を使う。どちらも無ければ None。
+
+    poppler を入れられない環境（sudo が使えない WSL など）でも、pip で入る pdfminer.six なら
+    文字の層がある PDF まで読める（#15）。行の切れ方は pdftotext と違うが、抜き書きの照合は
+    同じ .txt に対して行うので困らない。文字の層が無い PDF の OCR は pdftoppm が要るまま
     """
-    if missing("pdftotext"):
-        return ""
+    if not missing("pdftotext"):
+        # Xpdf の pdftotext（Git for Windows に入っている）は既定で Latin-1 を出すので、
+        # -enc UTF-8 で出力の文字コードを決める。poppler の pdftotext も同じ引数を受け付ける（#3）
+        return ["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)]
+    if has_pdfminer():
+        # 子の処理の作業フォルダは、取ってきたファイルの無いこのスクリプトの置き場にする。
+        # python -c は作業フォルダから先に読み込むので、ダウンロードの隣で動かさない
+        return [sys.executable, "-c", PDFMINER, str(pdf), str(out)]
+    # pipx などで、コマンドだけ PATH にある。Windows は .py を直接は動かせないので使わない
+    if os.name != "nt" and not missing("pdf2txt.py"):
+        return ["pdf2txt.py", "-o", str(out), str(pdf)]
+    return None
+
+
+def pdf_to_text(pdf: Path) -> str:
+    """PDF を、行番号で原文を指せる文字にする。pdftotext なら段組みを保つ -layout を使う。"""
     out = pdf.with_suffix(".txt")
-    done = run_tool(["pdftotext", "-layout", "-enc", "UTF-8", str(pdf), str(out)],
-                    stderr=subprocess.DEVNULL)
+    # 子の処理は別の作業フォルダで動かすので、ファイルは絶対パスで渡す
+    cmd = pdf_text_command(pdf.resolve(), out.resolve())
+    if cmd is None:
+        return ""
+    done = run_tool(cmd, stderr=subprocess.DEVNULL, cwd=Path(__file__).resolve().parent)
     # 時間切れの書きかけ、途中で失敗した書きかけ、圧縮を解くと何 GB にもなる PDF の文字は使わない。
     # 書きかけを使うと、後半を引用できないのに「原文に無い」と読み違える
     if done is None or done.returncode != 0 or (out.exists() and out.stat().st_size > MAX_BYTES):
@@ -1200,6 +1234,8 @@ def verify_and_save(name: str, text: str, saved: Path, kept: Path, destination: 
         reason = f"壁に当たった（{wall}）" if wall else f"本文が短すぎる（{len(text)}文字）"
         # PDF の文字起こしに要るコマンドが欠けていたなら、短い理由はたいていそれ
         lacking = missing("pdftotext", "pdftoppm", "tesseract") if saved.suffix == ".pdf" else []
+        if "pdftotext" in lacking and pdf_text_command(saved, kept) is not None:
+            lacking.remove("pdftotext")  # 代わりの pdfminer.six で文字の層は読んだ。足りないのは OCR の道具
         if lacking:
             reason += f"。{'・'.join(lacking)} が無い"
         elif ocr_note and saved.suffix == ".pdf":
