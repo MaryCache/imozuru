@@ -46,11 +46,11 @@ CONTEXT_LINES = 6
 MINUS = ("-", "\u2212", "\uff0d", "\u2013")
 # 符号つきの数の始まり。「.」だけでは数にしない（「- .NET 8」の「.NET」を負号の後ろと見なさない）
 SIGNED_NUMBER = re.compile(r"[.．]?\d")
-# 負号の直前にこの字があれば、語の中のハイフン（COVID-19・18-65・行末で切った「period-」）として扱う。
+# 負号の直前にこの字があれば、語の中のハイフンか範囲（COVID-19・18-65・50%–60%・行末で切った「period-」）として扱う。
 # 和文の「気温は－5度」を通さないよう、仮名や漢字は含めない
-WORD_CHAR = re.compile(r"[A-Za-z0-9０-９Ａ-Ｚａ-ｚ]")
+WORD_CHAR = re.compile(r"[A-Za-z0-9０-９Ａ-Ｚａ-ｚ%％°]")
 # 照合に落ちたときの案内。行番号のずれと思って行を直しても通らないので、負号の決まりをここで知らせる
-MINUS_HINT = ("数で始まる抜き書きは、原文でその直前に負号（-・−・－・–）があれば負号ごと写す。"
+MINUS_HINT = ("数で始まる抜き書きは、原文でその直前に負号やダッシュ（-・−・－・–）があれば、その記号ごと写す。"
               "数で始まる箇条書きの項目も「- 」ごと写す（負号と見分けられないため）")
 
 
@@ -128,7 +128,13 @@ def _in_order(pieces: list[str], region: str) -> bool:
 def _after_minus(region: str, at: int) -> bool:
     """region の at の直前（空白を除く）が負号か。英数字の直後のハイフンは語の一部なので負号にしない"""
     head = region[:at].rstrip()
-    return head.endswith(MINUS) and not WORD_CHAR.fullmatch(head[-2:-1] or " ")
+    if not head.endswith(MINUS):
+        return False
+    # 空白をはさむ en dash は範囲（2019 – 2020）か挿入のダッシュ。負号の en dash は数に接する（–0.5）。
+    # ハイフンは空白があっても負号とする（Markdown の「- 5 mg」・#19）
+    if head.endswith("\u2013") and len(head) != at:
+        return False
+    return not WORD_CHAR.fullmatch(head[-2:-1] or " ")
 
 
 def esc(s: str) -> str:
@@ -354,18 +360,20 @@ def main() -> int:
     data = json.loads((topic / "extracts.json").read_text(encoding="utf-8"))
     src = topic / "sources"
 
-    bad, rendered = [], {}
+    bad, rendered, signed_bad = [], {}, False
     groups = [("claims", c) for c in data["claims"]] + [("dis", d) for d in data.get("disagreements", [])]
     for _, g in groups:
         for q in g.get("quotes", []):
             ok, ctx, c0, _ = verify(src, q)
             if not ok:
                 bad.append(f"{q['file']}:{q['line']}  「{q['text'][:40]}…」")
+                signed_bad = signed_bad or any(SIGNED_NUMBER.match(norm(p)) for p in q["text"].split("…"))
             rendered[id(q)] = (ctx, c0)
     if bad:
         print("原文に見つからない抜き書きがある（言い換えか、行番号のずれ）:")
         print("\n".join("  " + b for b in bad))
-        print(MINUS_HINT)
+        if signed_bad:  # 行番号のずれや言い換えで落ちたときにまで出すと、原因を取り違える
+            print(MINUS_HINT)
         return 1
     total = sum(len(g.get("quotes", [])) for _, g in groups)
     print(f"照合 OK: 抜き書き {total} 件がすべて原文のとおり")

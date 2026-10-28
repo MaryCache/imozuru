@@ -175,6 +175,13 @@ class FileBoundaryTests(unittest.TestCase):
             "気温は－5度だった。\nChange was –3 points.\nSeasons 2019–2020 ended.\n", encoding="utf-8")
         cases = {(1, "5度だった。"): False, (1, "気温は－5度だった。"): True,
                  (2, "3 points."): False, (3, "2020 ended."): True}
+        # 空白をはさむ en dash は範囲か挿入のダッシュ。% の後ろも範囲
+        (self.sources / "dashes.txt").write_text(
+            "Seasons 2019 \u2013 2020 ended.\nThe rate \u2013 30% of patients \u2013 rose.\nRates rose 50%\u201360% overall.\n",
+            encoding="utf-8")
+        for line, text in ((1, "2020 ended."), (2, "30% of patients \u2013 rose."), (3, "60% overall.")):
+            with self.subTest(text=text):
+                self.assertTrue(report.verify(self.sources, {"file": "dashes.txt", "line": line, "text": text})[0])
         for (line, text), expected in cases.items():
             with self.subTest(text=text):
                 q = {"file": "signs.txt", "line": line, "text": text}

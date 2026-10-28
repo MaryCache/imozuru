@@ -471,17 +471,18 @@ def serve(root: Path, runs: list[dict], port: int) -> int:
 
 
 def started_at(d: Path) -> float:
-    """調査を始めた時刻の目安。取得の記録（fetch-log.jsonl）に時刻があれば一番早いもの。
-    2.2.0 より前の記録には時刻が無いので、sources/ で一番古いファイル（最初に保存した原文）、無ければ map.md・log.md の古いほう。
-    ファイルの時刻は clone やコピーで変わるので、記録の時刻を先に使う。リンクはたどらない。何も無ければ 0"""
-    times = [t for f in load_jsonl(d / "fetch-log.jsonl") if (t := _epoch(f.get("at"))) is not None]
-    if times:
-        return min(times)
+    """調査を始めた時刻の目安。取得の記録（fetch-log.jsonl）の時刻と、sources/ で一番古いファイル（最初に保存した原文）の
+    早いほう。どちらも無ければ map.md・log.md の古いほう。リンクはたどらない。何も無ければ 0。
+    ファイルの時刻は clone やコピーで新しくなるだけなので、早いほうを取れば記録の時刻が勝つ。
+    2.2.0 より前の記録には時刻が無く、2.1.0 で始めて続きを取った調査はファイルの時刻のほうが早い"""
+    logged = [t for f in load_jsonl(d / "fetch-log.jsonl") if (t := _epoch(f.get("at"))) is not None]
+    times = []
     try:
         with os.scandir(d / "sources") as it:
             times = [e.stat(follow_symlinks=False).st_mtime for e in it if e.is_file(follow_symlinks=False)]
     except OSError:
         pass
+    times += logged
     if not times:
         for name in ("map.md", "log.md"):
             try:
