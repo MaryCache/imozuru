@@ -10,6 +10,10 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+### 変更
+
+- `skills/imozuru/SKILL.md` を段階的開示（Progressive Disclosure）に沿って `skills/imozuru/references/` 配下（`theory.md`, `tools.md`, `output-formats.md`, `watch.md`）へ分割しました（#23）。`## 境界`、`fetch.py` の検査・安全ルール（#22 の Playwright サンドボックス含む）、引用照合の必須ルール、および `description` は `SKILL.md` 本体に維持し、各手順内で参照ファイルを名指しする構成にしています。
+
 ## [2.2.1] - 2026-11-19
 
 ### 修正
