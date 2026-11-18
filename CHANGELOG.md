@@ -14,6 +14,8 @@ imozuruのバージョンごとの変更を記録します。
 
 - `skills/imozuru/SKILL.md` を段階的開示（Progressive Disclosure）に沿って `skills/imozuru/references/` 配下（`theory.md`, `tools.md`, `output-formats.md`, `watch.md`）へ分割しました（#23）。`## 境界`、`fetch.py` の検査・安全ルール（#22 の Playwright サンドボックス含む）、引用照合の必須ルール、および `description` は `SKILL.md` 本体に維持し、各手順内で参照ファイルを名指しする構成にしています。
 
+## [2.2.1] - 2026-11-19
+
 ### 修正
 
 - SKILL.mdの「fetch.py には限界がある」の箇所に、Playwrightで外のページを開くときは、起動時にサンドボックスを明示する決まりを足しました（#22）。Playwrightの既定では `--no-sandbox` が付き、信頼できない外のページをサンドボックスなしで開いていました。サンドボックスつきで起動できない環境では、外さずにユーザーのブラウザで開く手へ切り替えます。手元のChromeを使う `channel="chrome"` を足すかどうかは任意です。
@@ -154,7 +156,8 @@ AIの判断能力は形式知・ノウハウを収集することで強化され
 - 検索結果から来るURL・本文・フィードを、他人が細工したものとして扱う。
 - 文字の層が無いPDFのOCRで、言語データから言語を選び、意味をなさない読み取りを失敗として扱う（#11）。
 
-[未公開]: https://github.com/MaryCache/imozuru/compare/v2.2.0...dev
+[未公開]: https://github.com/MaryCache/imozuru/compare/v2.2.1...dev
+[2.2.1]: https://github.com/MaryCache/imozuru/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/MaryCache/imozuru/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/MaryCache/imozuru/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/MaryCache/imozuru/compare/v1.0.0...v2.0.0
