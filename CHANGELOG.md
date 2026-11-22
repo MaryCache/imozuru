@@ -10,6 +10,12 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+### 追加
+
+- `fetch.py` に一時障害（HTTP 429・503・504・タイムアウト）のジッター付き指数バックオフ再試行を追加しました。`Retry-After` ヘッダを尊重し、上限（15秒）を超える待ち指示は待たずに打ち切ります。400・401・403・404などの恒久エラーは再試行しません。
+- `fetch.py` に学術論文向けの公式オープンアクセス補完を追加しました。明示的な DOI または PMCID を持つ URL の取得が失敗したとき、Europe PMC 検索 API と OpenAlex Works API から DOI・PMCID が完全一致する公開版（JATS 全文 XML または OA PDF）だけを取り直し、`fetch-log.jsonl` に取得経路（`via`）と実取得先（`resolved_url`）を残します（`--no-fallback` で無効化できます）。確認画面（Cloudflare 等）の文言検査も広げました。
+- ユーザーが自分のブラウザで保存した HTML・PDF・テキストを、サイズ上限・壁検査・LF 正規化・原子的保存を通して `sources/` へ取り込む `scripts/ingest.py`（`--file` / `--inbox`）を追加しました。`fetch-log.jsonl` に `"via": "user-browser"` で記録します。
+
 ## [2.2.1] - 2026-11-19
 
 ### 修正
