@@ -16,6 +16,10 @@ imozuruのバージョンごとの変更を記録します。
 - `fetch.py` に学術論文向けの公式オープンアクセス補完を追加しました。明示的な DOI または PMCID を持つ URL の取得が失敗したとき、Europe PMC 検索 API と OpenAlex Works API から DOI・PMCID が完全一致する公開版（JATS 全文 XML または OA PDF）だけを取り直し、`fetch-log.jsonl` に取得経路（`via`）と実取得先（`resolved_url`）を残します（`--no-fallback` で無効化できます）。確認画面（Cloudflare 等）の文言検査も広げました。
 - ユーザーが自分のブラウザで保存した HTML・PDF・テキストを、サイズ上限・壁検査・LF 正規化・原子的保存を通して `sources/` へ取り込む `scripts/ingest.py`（`--file` / `--inbox`）を追加しました。`fetch-log.jsonl` に `"via": "user-browser"` で記録します。
 
+### 変更
+
+- `skills/imozuru/SKILL.md` を段階的開示（Progressive Disclosure）に沿って `skills/imozuru/references/` 配下（`tools.md`, `output-formats.md`, `watch.md`）へ分割し、各決まりの元になった試行の記録と出典を `references/theory.md` へ整理・追記しました（#23）。`## 境界`、`fetch.py` の検査・安全ルール（#22 の Playwright サンドボックス含む）、引用照合の必須ルール、各決まりの理由、および `description` は `SKILL.md` 本体に維持し、各手順内で参照ファイルを名指しする構成にしています。
+
 ## [2.2.1] - 2026-11-19
 
 ### 修正
