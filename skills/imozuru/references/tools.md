@@ -17,15 +17,16 @@
 `scripts/fetch.py <sources_dir> <name> <url> [--no-fallback]`: ダウンロードして本物か確かめ、作業用フォルダで検査して通ったものだけを `sources_dir` へ移す。
 
 - **PDF**: `.pdf` と `.txt` を保存する（`pdftotext -layout`・poppler か Xpdf。無ければ `pdfminer.six`）。
-  - 文字の層が無い PDF は `pdftoppm` と `tesseract` で OCR する。言語は tesseract の言語データに `jpn`・`jpn_vert` があれば英語に足し、環境変数 `IMOZURU_OCR_LANG` があればそれを使う。
+  - 文字の層が無い PDF は `pdftoppm` と `tesseract` で OCR する。言語は tesseract の言語データに `jpn`・`jpn_vert` があれば英語に足し、環境変数 `IMOZURU_OCR_LANG` があればそれを使う（海外言語の例: `chi_sim+eng`、`kor+eng`、`deu+eng`、`fra+eng`、`rus+eng`、`ara+eng`）。
   - 読み取りの確信度が低いとき（言語データが合わず意味のない字の列になったとき）と、読めなかったページがあるときは OCR の結果を使わず、理由を添えて `FAIL` する。要るコマンドが無いときは、無いコマンドの名前を書いて `FAIL` する。
 - **HTML**: `.md` を保存する。[ax](https://github.com/yusukebe/ax) があれば ax で、無ければ標準ライブラリで本文を文字にする（見出しや表の形は ax のほうが残る）。取得はいつも `fetch.py` 自身が宛先を確かめながら行い、ax には取ってきた HTML を渡して変換だけさせる。
+  - 文字コードは BOM → UTF-8 → 宣言 charset → HTML の `lang` ヒントに基づく言語別コードページ（GB18030・Big5・CP949・CP1251・CP1252・CP1256 等）→ 汎用フォールバックの順で解決する。国際化ドメイン名（IDN）も Punycode 変換したうえで SSRF 検査と取得を行う。
   - HTML のページは、名乗りを変えてもう一度頼み、PDF 本体が返ればそちらを残す（HAL はブラウザの名乗りに閲覧用の HTML を返す）。
-- **YouTube**: 字幕を `[分:秒] 文` の `.md` で保存する（`yt-dlp`・動画は保存しない）。動画の場所は行番号の代わりに時刻で指す（`sources/x.md [12:34]`）。
+- **YouTube**: 字幕を `[分:秒] 文` の `.md` で保存する（`yt-dlp`・動画は保存しない）。既定では日本語・英語の手動字幕を先に試し、無ければ動画の元言語（`zh-Hans` のようにサブタグつきでも）の手動字幕、それも無ければ元言語の自動字幕を取る。特定言語を優先したいときは環境変数 `IMOZURU_YT_LANGS`（`zh-Hans,en` のような並び）で指定でき、字幕が複数あればその並び順で選ぶ（`all`・`live_chat` は指定不可）。動画の場所は行番号の代わりに時刻で指す（`sources/x.md [12:34]`）。
 - **PMC（`pmc.ncbi.nlm.nih.gov`）**: 記事ページは captcha で取れないため、同じ本文を Europe PMC の全文 XML から取り、見出し・段落・図表の説明・文献を1つずつ1行にした `.md` にする（題名と書誌は頭の数行。Europe PMC に全文が無ければ `FAIL`）。
 - **一時障害の再試行と公式 OA 補完**: 一時障害（HTTP 429・503・504・タイムアウト）は `Retry-After` を尊重して最大2回までジッター付きで再試行する（400・401・403・404 等の恒久エラーは再試行しない）。`--no-fallback` が無ければ、明示的な DOI または PMCID を持つ学術 URL が失敗したときに Europe PMC 検索 API・OpenAlex Works API から DOI・PMCID が完全一致する公開版（JATS 全文 XML・OA PDF・HTML）を取り直し、取得経路を `fetch-log.jsonl` の `via`・`resolved_url` に残す。
-- **FAIL 条件**: 404・ログインの要求・ボット確認のページ・短すぎる本文は `FAIL`（同じ名前の原文がすでにあれば、そのまま残る）。
-  - 短さの下限は PDF が 3,000字、HTML が 1,000字。和文の字が3割を超える PDF は HTML と同じ 1,000字で判定する。
+- **FAIL 条件**: 404・ログインの要求・ボット確認のページ（日英および中・韓・独・仏・西・葡・露・アラビア語の主要文言を含む）・短すぎる本文は `FAIL`（同じ名前の原文がすでにあれば、そのまま残る）。
+  - 短さの下限は PDF が 3,000字、HTML が 1,000字。日本語・中国語・韓国語（ハングル）の字が3割を超える PDF は HTML と同じ 1,000字で判定する。
   - X は本文が取れないので取りに行かず `FAIL` とし、URL と検索役が拾った抜粋を（未確認）で `map.md` に残す。
 - **ファイル名規則**: `<著者>-<年>-<短い題>`、arXiv は `arxiv-<番号>-<短い題>`。
 

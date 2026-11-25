@@ -88,13 +88,21 @@ def search_title(key: str) -> list[dict]:
     題名に著者名を混ぜると外れるので、題名の語だけを渡す。
 
     登録された題名が副題抜きのことがある（Marchionini 2006 は "Exploratory search"
-    だけ）。全部の語では0件になるので、0件なら前半の3語で引き直す。
+    だけ）。全部の語では0件になるため、0件なら前半の3語で引き直す。
+    中国語・日本語の題名は語の間に空白が無く、1語に見えて前半の3語では引き直せない。
+    そこで、空白で割って1語だけの長い非 ASCII の題名（12 字超）は、先頭 10 字で引き直す。
+    全角の区切り（：、，・—–）は空白と同じに扱い、副題の前後を別の語にする。
     """
-    words = key.replace(",", " ").replace(":", " ").split()
+    words = re.sub(r"[,:：、，・—–]", " ", key).split()
     if not words:  # 空の条件で問い合わせると、題名を絞らない検索になる
         return []
+    candidates = [words]
     # 3語以下なら前半の3語は全部と同じ。同じ問い合わせを2回送って枠を使わない
-    for terms in (words, words[:3]) if len(words) > 3 else (words,):
+    if len(words) > 3:
+        candidates.append(words[:3])
+    elif len(words) == 1 and len(words[0]) > 12 and not words[0].isascii():
+        candidates.append([words[0][:10]])
+    for terms in candidates:
         hits = get("/works", filter="title.search:" + " ".join(terms),
                    sort="cited_by_count:desc", **{"per-page": 5}, select=FIELDS)["results"]
         if hits:

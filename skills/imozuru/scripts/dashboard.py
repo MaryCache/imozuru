@@ -27,6 +27,7 @@ import re
 import shutil
 import sys
 import tempfile
+import unicodedata
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -196,7 +197,8 @@ def source_hosts(map_text: str) -> list[str]:
 
 
 def topic_info(d: Path, runs: list[dict]) -> dict:
-    map_text, log_text = read(d / "map.md"), read(d / "log.md")
+    # NFD（e と結合アクセントの2文字）の形で記載された題名や読みも、一覧の検索の fold() が前提にする NFC（1文字）へそろえる
+    map_text, log_text = unicodedata.normalize("NFC", read(d / "map.md")), read(d / "log.md")
     info: dict = {"slug": d.name, "has_map": bool(map_text)}
     q = re.search(r"^問い[:：]\s*(.+)$", map_text, re.M)
     info["question"] = q.group(1).strip() if q else ""
@@ -1531,9 +1533,13 @@ an.onfinish=function(){if(dt.classList.contains('closing')){dt.open=false;dt.cla
 // 根拠は ~/research/ja-incremental-search（2026-10-22）。1ページの件数は決めず、一覧の高さに収まるまで項目の実際の高さを積んで区切る
 var as=s.querySelector('aside'),ol=as.querySelector('ol'),fi=document.getElementById('find'),fl=fi.parentNode,
 none=as.querySelector('.find-none'),live=document.getElementById('find-n'),pgs=[].slice.call(document.querySelectorAll('.pager'));
-// 文字の畳み方。大文字小文字・カタカナとひらがな・全角と半角の英数を同じにする。1文字を1文字に直すので、当たった位置がそのまま元の文の位置になる
-function fold(v){v=String(v).toLowerCase();var o='';for(var i=0;i<v.length;i++){var c=v.charCodeAt(i);
-if(c>=0x30a1&&c<=0x30f6)c-=0x60;else if(c>=0xff01&&c<=0xff5e)c-=0xfee0;o+=String.fromCharCode(c)}return o}
+// 文字の畳み方。大文字小文字・カタカナとひらがな・全角と半角の英数・欧文のアクセント（é→e・ü→u・ñ→n）を同じにする。元の文を1コード単位ずつ見て1文字を必ず1文字に直す（İ のように小文字化で2文字になるものも1文字にする）ため、当たった位置がそのまま元の文の位置になる
+// アクセントは1文字ずつ NFD に分けて結合アクセント（U+0300〜036F）だけを外す。外した結果が1文字にならないもの（濁点・半濁点つきのかな、ハングルの音節）は元のまま残す
+function fold(v){var s=String(v),o='';for(var i=0;i<s.length;i++){var ch=s.charAt(i),c=s.charCodeAt(i),l,d;
+if(c>=0x30a1&&c<=0x30f6){o+=String.fromCharCode(c-0x60);continue}
+if(c>=0xff01&&c<=0xff5e){o+=String.fromCharCode(c-0xfee0).toLowerCase();continue}
+l=ch.toLowerCase();d=l.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'');
+o+=d.length===1?d:(l.length===1?l:ch)}return o}
 // ローマ字の表。ヘボン式・訓令式・IME の打ち方（Google 日本語入力・MS-IME）を同じかなへ寄せる（Migemo もヘボン式と訓令式の両方を展開する）
 var RK={};("a:あ i:い u:う e:え o:お ka:か ki:き ku:く ke:け ko:こ ca:か cu:く co:こ sa:さ si:し shi:し su:す se:せ so:そ ta:た ti:ち chi:ち tu:つ tsu:つ te:て to:と "+
 "na:な ni:に nu:ぬ ne:ね no:の ha:は hi:ひ hu:ふ fu:ふ he:へ ho:ほ ma:ま mi:み mu:む me:め mo:も ya:や yu:ゆ yo:よ ra:ら ri:り ru:る re:れ ro:ろ "+

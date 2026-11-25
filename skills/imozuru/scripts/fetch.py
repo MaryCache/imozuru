@@ -52,8 +52,9 @@ MIN_HTML_CHARS = 1000
 # 和文（日本語・中国語）の PDF は、英語より少ない字数で中身がある。
 # 本文の空白以外の字のうち和文の字がこの割合を超える PDF は、HTML と同じ下限で判定する。
 CJK_RATIO_FOR_PDF = 0.3
-# 和文の字＝かな・漢字・全角の英数字と記号
-_CJK = re.compile(r"[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]")
+# 和文の字＝かな・漢字・全角の英数字と記号。韓国語のハングル（音節・字母・互換字母）も数える。
+# 韓国語は日本語・中国語と同じく、英語より少ない字数で同じ中身を表せるため
+_CJK = re.compile(r"[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]")
 MAX_BYTES = 40_000_000
 # 保存する原文の改行。Windows の write_text は \n を \r\n に変えるので、同じ原文の写しが
 # OS によってバイトで食い違っていた（2026-10-26 に Windows で試験を回して分かった）。OS によらず LF にそろえる
@@ -87,6 +88,17 @@ WALL_PATTERNS = (
     # Anubis（ボット除けの計算をさせるページ）。HAL などが使う。中身の無い 1,000 字ほどのページが
     # HTML の下限を越えて OK になった（2026-10-20）
     "you're not a bot",
+    # 中国語（簡体・繁体）・韓国語・独・仏・西・葡・露・アラビア語の、ログイン壁・404・アクセス拒否。
+    # 通常の本文に紛れにくい、ページ全体の状態を告げる言い回しだけを選ぶ（小文字で照合するため、小文字で記入する）
+    "您访问的页面不存在", "您訪問的頁面不存在", "请登录后查看", "請登入後查看", "请先登录", "請先登入",
+    "访问被拒绝", "存取被拒絕",
+    "페이지를 찾을 수 없습니다", "로그인이 필요합니다", "접근이 거부되었습니다",
+    "seite nicht gefunden", "zugriff verweigert", "bitte melden sie sich an, um fortzufahren",
+    "page introuvable", "accès refusé", "veuillez vous connecter pour continuer",
+    "página no encontrada", "acceso denegado", "inicia sesión para continuar",
+    "página não encontrada", "acesso negado",
+    "страница не найдена", "доступ запрещён", "доступ запрещен", "войдите, чтобы продолжить",
+    "الصفحة غير موجودة", "تم رفض الوصول",
 )
 # Cloudflare などの確認画面に特有の表示。通常の文章に紛れる「just a moment」単体は含めない。
 CHALLENGE_PATTERNS = (
@@ -97,6 +109,12 @@ CHALLENGE_PATTERNS = (
     "enable javascript and cookies to continue",
     "attention required! | cloudflare",
     "しばらくお待ちください",
+    # Cloudflare などの確認画面の各国語版
+    "确认您是真人", "確認您是真人", "请完成安全验证", "請完成安全驗證",
+    "bestätigen sie, dass sie ein mensch sind",
+    "vérifiez que vous êtes humain", "vérification de sécurité en cours",
+    "verifica que eres humano", "verificando que eres humano",
+    "подтвердите, что вы человек", "подтвердите, что вы не робот",
 )
 # 一時障害やレート制限だけ再試行する。400/401/403/404 のような恒久エラーは繰り返さない。
 RETRYABLE_HTTP_STATUS = frozenset({429, 503, 504})
@@ -280,6 +298,12 @@ def url_problem(url: str) -> str | None:
     try:
         p = urllib.parse.urlsplit(url)
         host = p.hostname
+        # 範囲外（:99999）や数字でないポート（:abc・全角の :８０）は、ここで ValueError にして断る。
+        # 全角の数字は古い Python の int() が通すため、ASCII の数字だけかも自分で見る
+        if p.port is not None and p.port > 65535:
+            raise ValueError("ポートが範囲外")
+        if not _PORT_TEXT.fullmatch(p.netloc.rpartition("@")[2]):
+            raise ValueError("ポートが ASCII の数字でない")
     except ValueError:
         return "URL の形が壊れている"
     if p.scheme.lower() not in {"http", "https"}:
@@ -288,6 +312,14 @@ def url_problem(url: str) -> str | None:
         return "URL にホストが無い"
     if "@" in p.netloc or "%" in p.netloc:
         return "URL のホストに「@」か「%」が入っている"
+    # 国際化ドメイン名は、検査より前に Punycode（ASCII）へ1回だけ直す。検査も接続（ascii_url）も
+    # この直した名前を使うため、検査した宛先とつなぐ宛先がずれない。全角の「。」や全角の数字で
+    # 書いた 127.0.0.1 も、直せば普通の 127.0.0.1 になって下の検査で止まる。
+    # ASCII のホストも同じ関数で LDH を確認する（空白や制御文字を含む名前を resolve に渡さない）
+    try:
+        host = _ascii_host(host)
+    except ValueError:
+        return "URL の形が壊れている"
     if os.environ.get("IMOZURU_ALLOW_PRIVATE") == "1":
         return None
     try:
@@ -323,17 +355,60 @@ def _addresses_inside(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> list
     return found
 
 
+# ホスト名のラベル（RFC 1123）。英数字で始まり終わり、間にハイフンを許す
+_LDH_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+# 「host:port」の port 部分が ASCII の数字だけ（空も可）のとき一致する。IPv6 の「[::1]:80」にも使う
+_PORT_TEXT = re.compile(r"(?:\[[^\]]*\]|[^:\[\]]*)(?::[0-9]*)?")
+
+
+def _ascii_host(host: str) -> str:
+    """ホスト名を ASCII にする。ASCII ならそのまま、非 ASCII なら IDNA（Punycode）に直して返す。
+
+    空・制御文字を含む・IDNA に直せない（空のラベルや長すぎるラベル）ときは ValueError。
+    直した結果が IP リテラルでなければ、各ラベルが LDH（英数字とハイフン・両端はハイフンでない・63 字まで）かも確認する。
+    全角の「％」（NFKC で「%」になる）や NBSP のように、IDNA の変換を通っても ASCII の記号や空白で残る字を、
+    ホストとして通さないため。FQDN の末尾の「.」は1個だけ許す。
+    標準の idna 符号化（IDNA 2003）を使うのは、外のパッケージを入れず、http.client が
+    つなぐときに使う変換と同じ結果にそろえるため。
+    """
+    if not host or any(ord(c) < 0x20 or ord(c) == 0x7F for c in host):
+        raise ValueError("ホスト名が空か、制御文字を含む")
+    if host.isascii():
+        ascii_host = host
+    else:
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+        except UnicodeError as e:
+            raise ValueError(f"ホスト名を IDNA に直せない（{e}）") from e
+    try:
+        ipaddress.ip_address(ascii_host)
+    except ValueError:
+        labels = ascii_host.split(".")
+        if len(labels) > 1 and labels[-1] == "":
+            labels.pop()  # FQDN の末尾の「.」
+        if not all(_LDH_LABEL.fullmatch(label) for label in labels):
+            raise ValueError("ホスト名のラベルが LDH（英数字とハイフン）でない") from None
+    return ascii_host
+
+
 def ascii_url(url: str) -> str:
-    """パスとクエリにそのまま入った日本語の字などを % で符号化する。
+    """パスとクエリにそのまま入った日本語の字などを % で符号化し、国際化ドメイン名を Punycode にする。
 
     urllib は要求の行を ASCII で組むので、辞書の項目名や自治体のファイル名を符号化せずに
     書いたリンクは UnicodeEncodeError で止まる（和竿の漆塗りの試行で 36 本中 2 本）。
-    safe に % を入れるので、符号化済みの URL は変わらない。国際化ドメイン名は扱わない。
+    safe に % を入れるため、符号化済みの URL は変わらない。
+    ホストが非 ASCII なら、url_problem が検査したのと同じ _ascii_host の結果に差し替える（ポートは残す）。
+    「@」か「%」を含む netloc は url_problem が断るため、ここでも触らない。
     """
     p = urllib.parse.urlsplit(url)
     path = urllib.parse.quote(p.path, safe="/%:@!$&'()*+,;=~")
     query = urllib.parse.quote(p.query, safe="=&%/:+?@!$'()*,;~")
-    return urllib.parse.urlunsplit((p.scheme, p.netloc, path, query, p.fragment))
+    netloc = p.netloc
+    host = p.hostname
+    if host and not host.isascii() and "@" not in netloc and "%" not in netloc:
+        port = p.port  # 範囲外のポートは ValueError。検査済みの URL では起きない
+        netloc = _ascii_host(host) + (f":{port}" if port is not None else "")
+    return urllib.parse.urlunsplit((p.scheme, netloc, path, query, p.fragment))
 
 
 # ふだんの名乗り。ブラウザでないと本文を返さないサイトがあるので、ブラウザの形で始める。
@@ -485,6 +560,58 @@ def _declared_charsets(body: bytes, ctype: str) -> list[str]:
     return [_CHARSET_ALIASES.get(n, n) for n in names]
 
 
+# 言語タグの先頭（BCP 47）から、その言語の旧来の文字コードの候補。文字コードを名乗らない古いページでも、
+# 言語の名乗りは html の lang や Content-Language に残っていることが多い。前の候補ほど有力。
+# 繁体字（地域・文字種つき）と簡体字は同じ zh でも文字コードの系統が違うため、先頭の2つのタグで引く
+_LANG_CODECS: dict[str, tuple[str, ...]] = {
+    "zh-tw": ("big5hkscs", "big5", "gb18030"), "zh-hk": ("big5hkscs", "big5", "gb18030"),
+    "zh-mo": ("big5hkscs", "big5", "gb18030"), "zh-hant": ("big5hkscs", "big5", "gb18030"),
+    "zh": ("gb18030", "gbk"), "zh-cn": ("gb18030", "gbk"), "zh-sg": ("gb18030", "gbk"),
+    "zh-hans": ("gb18030", "gbk"),
+    "ko": ("cp949", "euc_kr"),
+    "ru": ("cp1251", "koi8_r", "koi8_u"), "uk": ("cp1251", "koi8_r", "koi8_u"),
+    "bg": ("cp1251", "koi8_r", "koi8_u"),
+    "ar": ("cp1256",), "he": ("cp1255",), "th": ("cp874",), "tr": ("cp1254",), "vi": ("cp1258",),
+    "pl": ("cp1250",), "cs": ("cp1250",), "hu": ("cp1250",), "ro": ("cp1250",),
+    "el": ("cp1253",),
+    "en": ("cp1252", "latin-1"),
+    "de": ("cp1252", "latin-1"), "fr": ("cp1252", "latin-1"), "es": ("cp1252", "latin-1"),
+    "pt": ("cp1252", "latin-1"), "it": ("cp1252", "latin-1"), "nl": ("cp1252", "latin-1"),
+    "ja": ("cp932", "euc_jp"),
+}
+# data-lang のような別の属性を検出しないよう、lang の前は英数字・ハイフンでないものに限る（xml:lang は検出する）
+_HTML_LANG = re.compile(rb"<html\b[^>]*?(?<![\w-])lang\s*=\s*[\"']?([A-Za-z0-9_-]+)", re.I)
+_META_TAG = re.compile(rb"<meta\b[^>]*>", re.I)
+_META_CONTENT_LANGUAGE = re.compile(rb"http-equiv\s*=\s*[\"']?content-language", re.I)
+_META_CONTENT = re.compile(rb"[\s\"']content\s*=\s*[\"']?([A-Za-z0-9_-]+)", re.I)
+
+
+def _declared_lang_codecs(body: bytes) -> list[str]:
+    """HTML の lang と Content-Language の名乗りから、その言語の文字コードの候補を返す。
+
+    文字コードの名乗りが無い古い中国語・韓国語・ロシア語などのページを、UTF-8 や日本語の文字コードで
+    無理に読んで化けるのを避ける。名乗りはページを書いた他人が決めるため、ここでは候補を並べるだけにして、
+    decode_text が _DOCUMENT_CODECS で絞る。ファイルの頭だけを見るのは、_declared_charsets と同じ理由。
+    """
+    head = body[:4096]
+    tags = [m.group(1) for m in _HTML_LANG.finditer(head)]
+    # meta は http-equiv と content のどちらが先に記述されてもよいため、タグごとに両方を探す
+    for meta in _META_TAG.findall(head):
+        if _META_CONTENT_LANGUAGE.search(meta):
+            tags += [m.group(1) for m in _META_CONTENT.finditer(meta)]
+    found: list[str] = []
+    for tag in tags:
+        name = tag.decode("ascii", "ignore").lower().replace("_", "-")
+        # 完全なタグ（zh-hant-tw）→ 先頭2つ（zh-hant）→ 言語だけ（zh）の順に引く
+        parts = name.split("-")
+        keys = [name] + (["-".join(parts[:2])] if len(parts) > 2 else []) + [parts[0]]
+        for key in keys:
+            if key in _LANG_CODECS:
+                found += [c for c in _LANG_CODECS[key] if c not in found]
+                break
+    return found
+
+
 def decode_text(body: bytes, ctype: str = "") -> str:
     """本文を、書かれている文字コードで文字にする。
 
@@ -505,7 +632,10 @@ def decode_text(body: bytes, ctype: str = "") -> str:
             except UnicodeError:
                 break
     candidates = []
-    for name in ["utf-8", *_declared_charsets(body, ctype), "cp932", "euc_jp"]:
+    # 言語の名乗りからの候補は、文字コードの名乗りの後ろ・汎用の候補の前。汎用の候補は、名乗りが
+    # 何も無いページの最後の手段（gb18030・cp949・cp1252 は前の候補が全部外れたときだけ試す）
+    for name in ["utf-8", *_declared_charsets(body, ctype), *_declared_lang_codecs(body),
+                 "cp932", "euc_jp", "gb18030", "cp949", "cp1252"]:
         try:
             info = codecs.lookup(name)
         except LookupError:  # 知らない名乗り（x-user-defined など）は飛ばす
@@ -706,7 +836,8 @@ def ocr_pdf(pdf: Path) -> tuple[str, str]:
         return "", f"OCR で読めなかったページがある（{','.join(failed)}）"
     if chars and weighted / chars < OCR_MIN_CONFIDENCE:
         return "", (f"OCR の確信度が低い（平均 {weighted / chars:.0f}・言語 {langs}）。"
-                    "言語データが合っていないかも（日本語なら tesseract の jpn と jpn_vert）")
+                    "言語データが合っていないかも（日本語なら tesseract の jpn と jpn_vert。"
+                    "ほかの言語は IMOZURU_OCR_LANG で指定できる。例: chi_sim+eng・kor+eng・deu+eng）")
     return "\n".join(pages), ""
 
 
@@ -894,11 +1025,76 @@ def arxiv_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+# yt-dlp の --sub-langs に渡せる形（言語コードのカンマ区切り）。「all」や正規表現は通さない。
+# 各コードの先頭は英数字に限る。yt-dlp は先頭の「-」を「その言語を除く」の指定に読むため。
+# 動画の持ち主や環境変数の値で、字幕を全部落とさせたり、yt-dlp の引数を変えさせたりしないため
+_YT_LANGS_FORM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*(,[A-Za-z0-9][A-Za-z0-9_-]*)*")
+
+
+# --sub-langs に渡すと字幕を全部落とす、または動画ではなくチャットの記録を落とす指定。環境変数でも動画の名乗りでも通さない
+_YT_BLOCKED_LANGS = frozenset({"all", "live_chat"})
+# 動画の元の言語として受ける形。zh-Hans・zh-TW・pt-BR・es-419 のようにサブタグつきの完全なタグも通す
+_YT_SPOKEN_FORM = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,4})*")
+
+
+def _youtube_manual_langs() -> str:
+    """IMOZURU_YT_LANGS が有効な言語の並びならそれを、そうでなければ空文字を返す。"""
+    val = os.environ.get("IMOZURU_YT_LANGS", "").strip()
+    if val and _YT_LANGS_FORM.fullmatch(val) and not _YT_BLOCKED_LANGS & set(val.lower().split(",")):
+        return val
+    return ""
+
+
+def _spoken_language(printed: str) -> str:
+    """yt-dlp の出力（題名・投稿者・日付・言語のタブ区切り）から、動画の元の言語の完全なタグを返す。
+
+    言語の名乗りは動画の持ち主が決める。「all」などで字幕を全部落とさせないよう、言語の形だけ通す。
+    形が合わなければ空文字を返す。「all」は3字の形に合うが、--sub-langs に渡すと全部の字幕を落とすため除く。
+    zh-Hans と zh-Hant のように、サブタグで字幕の言語が変わるため、基底の言語（先頭のタグ）だけにせず完全なタグを返す。
+    基底の言語は呼び手が split("-")[0] で取る。
+    """
+    raw = printed.rstrip("\n").split("\t")[-1].strip()
+    if _YT_SPOKEN_FORM.fullmatch(raw) and raw.split("-")[0].lower() not in _YT_BLOCKED_LANGS:
+        return raw
+    return ""
+
+
+def _vtt_language(path: Path) -> str:
+    """v.<lang>.vtt の <lang> を小文字で返す。"""
+    name = path.name.lower()
+    return name[2:-4] if name.startswith("v.") and name.endswith(".vtt") else name
+
+
+def _vtt_order(vtts: list[Path], preferred: list[str]) -> list[Path]:
+    """字幕ファイルを、言語の優先順（完全一致 → 前方一致 → ファイル名順）に並べる。
+
+    前方一致は zh-Hans-orig のような自動字幕を zh-Hans の仲間として検出するため、「タグ + "-"」で始まるものに限る
+    （en が en-orig には当たるが、enx には当たらない）。
+    """
+    prefs = list(dict.fromkeys(t.lower() for t in preferred if t))
+
+    def rank(path: Path) -> tuple[int, int, str]:
+        tag = _vtt_language(path)
+        for i, want in enumerate(prefs):
+            if tag == want:
+                return (0, i, path.name)
+        for i, want in enumerate(prefs):
+            if tag.startswith(want + "-"):
+                return (1, i, path.name)
+        return (2, 0, path.name)
+
+    return sorted(vtts, key=rank)
+
+
 def youtube_to_md(url: str, out: Path) -> str:
     """yt-dlp で字幕だけ落とし（動画は落とさない）、時刻つきの本文にする。
 
-    手動の字幕を優先し（日本語→英語の順）、無ければ動画の元の言語の自動字幕。自動字幕は同じ文が
+    手動の字幕を優先し、無ければ動画の元の言語の自動字幕。自動字幕は同じ文が
     次の区間にも繰り返し出るので、直前と同じ文は捨てる。
+    手動の字幕の言語は、環境変数 IMOZURU_YT_LANGS（zh-Hans,en のような並び・all は不可）があればそれ、
+    無ければ ja,en。ja,en に無く、動画の元の言語が中国語・韓国語などのときは、自動字幕へ落ちる前に
+    その言語の手動字幕を1回だけ試す（zh-Hans のようにサブタグがあれば zh-Hans,zh）。
+    複数の字幕が取れたときの優先は、環境変数の並び → 元の言語（完全なタグ・基底の言語）→ 日本語 → 英語の順。
 
     自動字幕は誤変換が多い（大陸塗りの試行で「線画」が「洗画」）。どちらを使ったかを
     見出しに残し、読み手が引用を動画で確かめるべきか分かるようにする。手動と自動は
@@ -914,28 +1110,52 @@ def youtube_to_md(url: str, out: Path) -> str:
     """
     tmp = out.parent / f".{out.stem}-subs"
     tmp.mkdir(exist_ok=True)
-    kind, langs = "手動", "ja,en"
+    manual_langs = _youtube_manual_langs()
+    kind = "手動"
     printed = ""
-    for flag in ("--write-subs", "--write-auto-subs"):
-        meta = run_tool(
+    spoken = ""
+    base = ""
+
+    def fetch_subs(flag: str, langs: str) -> subprocess.CompletedProcess | None:
+        return run_tool(
             # --no-playlist: watch?v=…&list=… の URL で、再生リストの全部の字幕を取りに行かない
             ["yt-dlp", "--no-update", "--no-playlist", "--skip-download", flag, "--encoding", "utf-8",
              "--sub-langs", langs, "--sub-format", "vtt", "--no-simulate",
              "--print", "%(title)s\t%(uploader)s\t%(upload_date)s\t%(language|)s",
              "-o", str(tmp / "v.%(ext)s"), "--", url],
             capture_output=True, encoding="utf-8", errors="replace")
-        if meta is None:  # 時間切れ。字幕なしとして呼び手が FAIL にする
-            break
+
+    # 1回目: 手動の字幕。時間切れ（None）は、字幕なしとして呼び手が FAIL にする
+    meta = fetch_subs("--write-subs", manual_langs or "ja,en")
+    if meta is not None:
         printed = meta.stdout
-        if any(tmp.glob("*.vtt")):
-            break
-        kind = "自動（誤変換あり・引用は動画で確かめる）"
-        # 言語は en-US のように地域つきで来るが、字幕は en-orig。分からなければ日本語か英語の元の字幕
-        spoken = printed.rstrip("\n").split("\t")[-1].split("-")[0]
-        # 言語の名乗りは動画の持ち主が決める。「all」などで字幕を全部落とさせないよう、言語の形だけ通す
-        langs = f"{spoken}-orig" if re.fullmatch(r"[a-z]{2,3}", spoken) else "ja-orig,en-orig"
-    vtts = sorted((p for p in tmp.glob("*.vtt") if p.stat().st_size <= MAX_BYTES),
-                  key=lambda p: (".ja" not in p.name, p.name))
+        # 言語は en-US のように地域つきで来るが、字幕は en-orig。判別できなければ空（日本語か英語の元の字幕を依頼する）
+        spoken = _spoken_language(printed)
+        base = spoken.split("-")[0].lower()
+        if not any(tmp.glob("*.vtt")):
+            # 動画の元の言語が ja・en 以外（中国語・韓国語など）で、環境変数の指定も無いときは、
+            # 自動字幕へ落ちる前にその言語の手動字幕を1回だけ試す。手動字幕は自動より誤変換が少ない。
+            # zh-Hans のようにサブタグがあれば、完全なタグを先に、基底の言語（zh）を続けて依頼する
+            if spoken and base not in ("ja", "en") and not manual_langs:
+                meta = fetch_subs("--write-subs", spoken if spoken.lower() == base else f"{spoken},{base}")
+                if meta is not None:
+                    printed = meta.stdout or printed
+            if meta is not None and not any(tmp.glob("*.vtt")):
+                kind = "自動（誤変換あり・引用は動画で確かめる）"
+                # 完全なタグの -orig（zh-Hans-orig）も依頼する。ja・en は地域つき（en-US）でも字幕は en-orig のため、基底だけにする
+                if not spoken:
+                    auto_langs = "ja-orig,en-orig"
+                elif spoken.lower() == base or base in ("ja", "en"):
+                    auto_langs = f"{base}-orig"
+                else:
+                    auto_langs = f"{spoken}-orig,{base}-orig"
+                meta = fetch_subs("--write-auto-subs", auto_langs)
+                if meta is not None:
+                    printed = meta.stdout or printed
+    # 環境変数で言語を指定したときはその並びを最優先にする。指定が無ければ、動画の元の言語の字幕を最優先にし、
+    # 次に日本語・英語、残りはファイル名順
+    ordered = [*manual_langs.split(","), spoken, base, "ja", "en"] if manual_langs else [spoken, base, "ja", "en"]
+    vtts = _vtt_order([p for p in tmp.glob("*.vtt") if p.stat().st_size <= MAX_BYTES], ordered)
     lines, last = [], ""
     if vtts:
         stamp = "00:00"

@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from urllib.parse import urlsplit
@@ -47,16 +48,24 @@ MINUS = ("-", "\u2212", "\uff0d", "\u2013")
 # 符号つきの数の始まり。「.」だけでは数にしない（「- .NET 8」の「.NET」を負号の後ろと見なさない）
 SIGNED_NUMBER = re.compile(r"[.．]?\d")
 # 負号の直前にこの字があれば、語の中のハイフンか範囲（COVID-19・18-65・50%–60%・行末で切った「period-」）として扱う。
-# 和文の「気温は－5度」を通さないよう、仮名や漢字は含めない
-WORD_CHAR = re.compile(r"[A-Za-z0-9０-９Ａ-Ｚａ-ｚ%％°]")
+# 和文の「気温は－5度」を通さないよう、仮名や漢字は含めない。
+# アクセント付きのラテン文字（é・ü・ñ）・ギリシャ文字・キリル文字は、英数字と同じ語の字として数える
+# （「Covid‑19」と同じく「año-5」の「-」は語の中のハイフンで、負号ではない）。
+# ラテン文字の範囲から乗算記号 ×（U+00D7）と除算記号 ÷（U+00F7）は除く（「2×−5」の「−」は負号）。
+# ベトナム語や大文字のエスツェットを含む拡張ラテン文字（U+1E00〜1EFF）は追加する（「thế-5」の「-」は語の中のハイフン）
+WORD_CHAR = re.compile(r"[A-Za-z0-9０-９Ａ-Ｚａ-ｚ%％°\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f\u1e00-\u1eff\u0370-\u03ff\u0400-\u04ff]")
 # 照合に落ちたときの案内。行番号のずれと思って行を直しても通らないので、負号の決まりをここで知らせる
 MINUS_HINT = ("数で始まる抜き書きは、原文でその直前に負号やダッシュ（-・−・－・–）があれば、その記号ごと写す。"
               "数で始まる箇条書きの項目も「- 」ごと写す（負号と見分けられないため）")
 
 
 def norm(s: str) -> str:
-    """照合用に空白・改行・箇条書きの印をそろえる。文字そのものは変えない。
-    数が続く行頭の「- 」は負号かもしれないので残す（#19）"""
+    """照合用に空白・改行・箇条書きの印をそろえる。文字の意味は変えない。
+    数が続く行頭の「- 」は負号かもしれないため残す（#19）。
+    先頭で NFC にそろえるのは、仏・独・西・韓の原文が é を「e＋結合アクセント」の分解形で持つことがあり、
+    抜き書きの合成形と見た目が同じなのに一致しなくなるため。NFKC にしないのは、全角と半角・
+    上付きの数字などを同じにすると、別の文字の引用まで通してしまうため"""
+    s = unicodedata.normalize("NFC", s)
     s = re.sub(r"(?m)^\s*(?:\*|-(?!\s*[.．]?\d))\s+", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
@@ -305,7 +314,7 @@ def quote_html(src_dir: Path, q: dict, ctx: list[str], c0: int) -> str:
     parts = ['<figure class="quote">']
     if q.get("who"):
         parts.append(f'<div class="who">{esc(q["who"])}</div>')
-    parts.append(f'<blockquote{skin.lang_attr(q["text"])}>{esc(q["text"])}</blockquote>')
+    parts.append(f'<blockquote{skin.lang_attr(q["text"], q.get("lang"))}>{esc(q["text"])}</blockquote>')
     if q.get("ja"):
         parts.append(f'<p class="ja"><span class="tag">訳</span>{esc(q["ja"])}</p>')
     meta = [f'<code>{esc(loc)}</code>']
@@ -317,7 +326,7 @@ def quote_html(src_dir: Path, q: dict, ctx: list[str], c0: int) -> str:
     if q.get("context_note"):
         meta.append(f'<span class="cn">{esc(q["context_note"])}</span>')
     parts.append(f'<figcaption>{" ".join(meta)}</figcaption>')
-    parts.append(f'<details><summary>前後を読む（{c0}〜{c0 + len(ctx) - 1}行）</summary><pre{skin.lang_attr(" ".join(ctx))}>{ctx_html}</pre></details>')
+    parts.append(f'<details><summary>前後を読む（{c0}〜{c0 + len(ctx) - 1}行）</summary><pre{skin.lang_attr(" ".join(ctx), q.get("lang"))}>{ctx_html}</pre></details>')
     parts.append("</figure>")
     return "\n".join(parts)
 
