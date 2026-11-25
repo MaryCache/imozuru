@@ -10,8 +10,16 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+## [2.3.0] - 2026-11-26
+
 ### 追加
 
+- 海外言語（中国語・韓国語・ドイツ語・フランス語・スペイン語・ロシア語・アラビア語など）の一次資料を深くたどるための多言語対応を追加しました。
+  - `skills/imozuru/references/multilingual.md` を新設し、題材に応じた原産言語・言語圏の選定、直訳を避けた現地用語の収集、言語圏ごとの一次情報源・媒体の目安、取得・表示時の運用手順をまとめました。`SKILL.md`・`references/tools.md`・`references/output-formats.md` からも参照できるようにしました。
+  - `fetch.py` に HTML の `lang` ヒントを使った主要コードページ（GB18030・Big5・CP949・CP1251・CP1252・CP1256 等）への文字コード自動フォールバック、韓国語ハングルの PDF 短さ下限判定、国際化ドメイン名（IDN）の Punycode 変換（SSRF 境界を維持）、YouTube 動画元言語の手動字幕優先と `IMOZURU_YT_LANGS`、多言語の壁・確認画面パターンを追加しました。
+  - `chain.py` の題名検索で全角区切り記号と非分かち書き言語の長題名フォールバックに対応しました。
+  - `report.py` の引用照合に Unicode NFC 正規化と欧文・キリル・ギリシャ文字のハイフン判定を追加し、`skin.py` で文字種および任意の `"lang"` フィールドに応じた `lang` 属性・右横書き（`dir="auto"`）・多言語フォントフォールバックに対応しました。
+  - `dashboard.py` の一覧検索で欧文のアクセント記号を折りたたんで検索できるようにしました。
 - `fetch.py` に一時障害（HTTP 429・503・504・タイムアウト）のジッター付き指数バックオフ再試行を追加しました。`Retry-After` ヘッダを尊重し、上限（15秒）を超える待ち指示は待たずに打ち切ります。400・401・403・404などの恒久エラーは再試行しません。
 - `fetch.py` に学術論文向けの公式オープンアクセス補完を追加しました。明示的な DOI または PMCID を持つ URL の取得が失敗したとき、Europe PMC 検索 API と OpenAlex Works API から DOI・PMCID が完全一致する公開版（JATS 全文 XML または OA PDF）だけを取り直し、`fetch-log.jsonl` に取得経路（`via`）と実取得先（`resolved_url`）を残します（`--no-fallback` で無効化できます）。確認画面（Cloudflare 等）の文言検査も広げました。
 - ユーザーが自分のブラウザで保存した HTML・PDF・テキストを、サイズ上限・壁検査・LF 正規化・原子的保存を通して `sources/` へ取り込む `scripts/ingest.py`（`--file` / `--inbox`）を追加しました。`fetch-log.jsonl` に `"via": "user-browser"` で記録します。
@@ -162,7 +170,8 @@ AIの判断能力は形式知・ノウハウを収集することで強化され
 - 検索結果から来るURL・本文・フィードを、他人が細工したものとして扱う。
 - 文字の層が無いPDFのOCRで、言語データから言語を選び、意味をなさない読み取りを失敗として扱う（#11）。
 
-[未公開]: https://github.com/MaryCache/imozuru/compare/v2.2.1...dev
+[未公開]: https://github.com/MaryCache/imozuru/compare/v2.3.0...dev
+[2.3.0]: https://github.com/MaryCache/imozuru/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/MaryCache/imozuru/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/MaryCache/imozuru/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/MaryCache/imozuru/compare/v2.0.0...v2.1.0
