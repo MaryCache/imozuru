@@ -206,6 +206,9 @@ class YoutubeHostTests(unittest.TestCase):
         asked = []
 
         def yt_dlp(cmd, **kwargs):
+            if "--sub-langs" not in cmd:
+                # 字幕の一覧を調べる呼び出し。ここでは字幕を持たない動画として答える
+                return subprocess.CompletedProcess(cmd, 0, "{}\t{}\n", "")
             asked.append(cmd[cmd.index("--sub-langs") + 1])
             return subprocess.CompletedProcess(cmd, 0, "Talk\tSpeaker\t20220820\ten,all\n", "")
 

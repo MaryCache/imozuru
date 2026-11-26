@@ -504,6 +504,9 @@ class YoutubeCaptionTests(unittest.TestCase):
         asked = []
 
         def yt_dlp(cmd, **kwargs):
+            if "--sub-langs" not in cmd:
+                # 字幕の一覧を調べる呼び出し。ここでは字幕を持たない動画として答える
+                return subprocess.CompletedProcess(cmd, 0, "{}\t{}\n", "")
             flag = next(c for c in cmd if c.startswith("--write-"))
             langs = cmd[cmd.index("--sub-langs") + 1]
             asked.append((flag, langs))

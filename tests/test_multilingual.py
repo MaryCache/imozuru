@@ -442,11 +442,23 @@ class YoutubeLanguageTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("IMOZURU_YT_LANGS", None)
 
-    def run_youtube(self, language, manual=None, auto=None):
-        """manual と auto は動画が持つ字幕（言語 → 文）。指定されて、かつ有るものだけを .vtt に出力する。"""
+    def run_youtube(self, language, manual=None, auto=None, listed_manual=None, listed_auto=None):
+        """manual と auto は動画が持つ字幕（言語 → 文）。指定されて、かつ有るものだけを .vtt に出力する。
+
+        字幕の一覧を調べる呼び出し（--print に %(subtitles)j を含む）は asked に入れず self.probed に数える。
+        一覧は listed_manual・listed_auto（キーの並び）を JSON にして返す。省略すると、manual・auto のキーの並び。
+        """
         asked = []
+        self.probed = []
+        listed_manual = list(manual or {}) if listed_manual is None else listed_manual
+        listed_auto = list(auto or {}) if listed_auto is None else listed_auto
 
         def yt_dlp(cmd, **kwargs):
+            if "%(subtitles)j" in cmd[cmd.index("--print") + 1]:
+                self.probed.append(cmd)
+                listing = json.dumps({k: [{"ext": "vtt"}] for k in listed_manual}) + "\t" + \
+                    json.dumps({k: [{"ext": "vtt"}] for k in listed_auto})
+                return subprocess.CompletedProcess(cmd, 0, listing + "\n", "")
             flag = next(c for c in cmd if c.startswith("--write-"))
             langs = cmd[cmd.index("--sub-langs") + 1]
             asked.append((flag, langs))
@@ -545,6 +557,76 @@ class YoutubeLanguageTests(unittest.TestCase):
             with self.subTest(language=language):
                 asked, _ = self.run_youtube(language)
                 self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-auto-subs", "ja-orig,en-orig")])
+
+    def test_empty_language_manual_track_is_found_from_the_listing(self):
+        # 動画の言語が空で ko の手動字幕だけがある動画（実地のバグ）。ja,en の1回目では 0 文字だった
+        asked, body = self.run_youtube("", manual={"ko": "수동 자막"})
+        self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-subs", "ko")])
+        self.assertEqual(len(self.probed), 1)
+        self.assertEqual(body, "[00:01] 수동 자막")
+        self.assertIn("字幕: 手動 v.ko.vtt", self.out.read_text(encoding="utf-8"))
+
+    def test_empty_language_subtag_manual_track_is_found_from_the_listing(self):
+        asked, body = self.run_youtube("", manual={"zh-Hans": "简体字幕"})
+        self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-subs", "zh-Hans")])
+        self.assertEqual(body, "[00:01] 简体字幕")
+
+    def test_empty_language_live_chat_is_ignored_and_orig_auto_track_is_used(self):
+        # subtitles には live_chat だけ（チャットの記録）。これを指名せず、自動字幕の ko-orig を取る
+        asked, body = self.run_youtube("", auto={"ko-orig": "자동 자막"}, listed_manual=["live_chat"])
+        self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-auto-subs", "ko-orig")])
+        self.assertEqual(len(self.probed), 1)
+        self.assertEqual(body, "[00:01] 자동 자막")
+        self.assertIn("字幕: 自動", self.out.read_text(encoding="utf-8"))
+
+    def test_empty_language_subtag_orig_auto_track_is_found_from_the_listing(self):
+        asked, body = self.run_youtube("", auto={"zh-Hans-orig": "自动字幕"}, listed_auto=["zh-Hans", "zh-Hans-orig"])
+        self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-auto-subs", "zh-Hans-orig")])
+        self.assertEqual(body, "[00:01] 自动字幕")
+
+    def test_empty_language_without_listing_keeps_the_old_auto_request(self):
+        asked, _ = self.run_youtube("", listed_manual=[], listed_auto=[])
+        self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-auto-subs", "ja-orig,en-orig")])
+
+    def test_listing_keys_that_are_not_safe_language_tags_are_never_requested(self):
+        hostile = ["all", "live_chat", "-en", "en,all", "ko;rm", "a", "zh-", "en.*", "ALL-x"]
+        asked, _ = self.run_youtube("", listed_manual=hostile, listed_auto=[f"{k}-orig" for k in hostile])
+        self.assertEqual(asked, [("--write-subs", "ja,en"), ("--write-auto-subs", "ja-orig,en-orig")])
+
+    def test_listing_failure_falls_back_to_the_old_request(self):
+        for stdout in ("NA\tNA\n", "not json\n", "[]\t[]\n", "", "{}"):
+            with self.subTest(stdout=stdout):
+                self.assertEqual(self.probe_with(stdout), (None, None))
+        with patch.object(fetch, "run_tool", return_value=None):
+            self.assertEqual(fetch._probe_youtube_sub_langs("https://www.youtube.com/watch?v=example"), (None, None))
+
+    def probe_with(self, stdout):
+        result = subprocess.CompletedProcess([], 0, stdout, "")
+        with patch.object(fetch, "run_tool", return_value=result):
+            return fetch._probe_youtube_sub_langs("https://www.youtube.com/watch?v=example")
+
+    def test_listing_picks_manual_other_than_ja_en_and_first_safe_orig_auto(self):
+        listing = json.dumps({"live_chat": [], "ja": [], "en": [], "ko": []}) + "\t" + \
+            json.dumps({"en": [], "ja-ja": [], "all-orig": [], "ko-orig": [], "zh-Hans-orig": []})
+        self.assertEqual(self.probe_with(listing + "\n"), ("ko", "ko-orig"))
+
+    def test_listing_is_not_requested_when_the_language_is_known_or_subtitles_are_found(self):
+        # 動画の言語がある動画は、字幕が取れなくても一覧を調べない（従来の呼び出し数のまま）
+        for language in ("ko", "en-US", "ja", "zh-Hans"):
+            with self.subTest(language=language):
+                self.run_youtube(language, auto={f"{language.split('-')[0]}-orig": "自動"})
+                self.assertEqual(self.probed, [])
+        # 動画の言語が空でも、1回目の ja,en で手動字幕が取れたら調べない
+        asked, body = self.run_youtube("", manual={"en": "English"})
+        self.assertEqual(asked, [("--write-subs", "ja,en")])
+        self.assertEqual(self.probed, [])
+        self.assertEqual(body, "[00:01] English")
+
+    def test_listing_is_not_requested_when_environment_languages_are_set(self):
+        os.environ["IMOZURU_YT_LANGS"] = "ko,en"
+        asked, _ = self.run_youtube("", auto={"ko-orig": "자동"})
+        self.assertEqual(asked, [("--write-subs", "ko,en"), ("--write-auto-subs", "ja-orig,en-orig")])
+        self.assertEqual(self.probed, [])
 
     def test_spoken_language_keeps_the_full_tag(self):
         for printed, expected in (("zh-Hans", "zh-Hans"), ("zh-TW", "zh-TW"), ("pt-BR", "pt-BR"), ("es-419", "es-419"),

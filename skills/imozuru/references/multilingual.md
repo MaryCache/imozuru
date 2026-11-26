@@ -33,17 +33,17 @@
 
 媒体は固定の一覧から選ばず0周目で探すのが原則だが、見当がまったくつかないときの出発点として次を目安にする。
 
-| 言語圏 | 学術・一次資料リポジトリ | 実践記録・技術・コミュニティ媒体 |
+| 言語圏 | `fetch.py` で取得しやすい一次媒体・リポジトリ | 壁になりやすい媒体（ブラウザ取得・`ingest.py` 前提） |
 |---|---|---|
-| 中国語（簡体・繁体） | arXiv（中華圏著者ページ）、CNKI（抄録・無料公開分）、国家哲学社会科学文献中心 | 知乎（Zhihu）、CSDN、Bilibili（解説動画）、個人ブログ・GitHub |
-| 韓国語 | KCI（Korea Citation Index）、大学リポジトリ | Velog、Tistory、Naver D2 / Blog、YouTube |
-| ドイツ語 | 大学リポジトリ（OPUS 等）、技術報告・規格解説 | heise online、専門フォーラム、個人ブログ |
-| フランス語 | HAL（`hal.science`、`fetch.py` は PDF 再取得に対応）、OpenEdition、Persée | 技術ブログ、専門誌アーカイブ |
-| スペイン語・ポルトガル語 | SciELO、Redalyc、Dialnet | 大学・研究機関の公開資料、技術ブログ |
-| ロシア語 | CyberLeninka（OA 論文） | Habr、専門フォーラム |
-| アラビア語・その他 | 各言語版 Wikipedia の References、大学・公的機関の一次発表 | 現地語公式ドキュメント・YouTube |
+| 中国語（簡体・繁体） | 站酷（Zcool）、網易（163）、大学出版社の公開 PDF、GitHub 個人ブログ、arXiv（中華圏著者）、CLIP STUDIO TIPS 繁体字、GCORES | 知乎（403 / JS 描画）、CSDN（HTTP 521）、萌娘百科（JS 描画）、小紅書（ログイン必須）、CNKI 本文（有料） |
+| 韓国語 | YouTube（韓国語講義の字幕）、Paintingstack、CLIP STUDIO KR、KCI、大学リポジトリ、個人サイト（하루소식 等） | Tistory（403）、Postype（ボット対策の空応答）、Naver 有料/会員記事 |
+| ドイツ語 | 大学リポジトリ（OPUS 等）、技術報告・規格解説、heise online、個人ブログ | 会員制・有料専門誌 |
+| フランス語 | HAL（`hal.science`、`fetch.py` は PDF 再取得に対応）、OpenEdition、Persée、技術ブログ | 有料学術誌・会員制サイト |
+| スペイン語・ポルトガル語 | SciELO、Redalyc、Dialnet、大学・研究機関の公開資料 | 会員制・有料媒体 |
+| ロシア語 | CyberLeninka（OA 論文）、Habr、個人ブログ | ログイン必須フォーラム |
+| アラビア語・その他 | 各言語版 Wikipedia の References、大学・公的機関の一次発表、YouTube 字幕 | ログイン必須 SNS |
 
-※ ログイン必須の SNS（小紅書など）や有料データベースは境界どおり回避せず、ログイン不要の別置き場を探すか、URL を並べてユーザーへ渡す。
+※ 2026-11-26 の実測（中・韓 28 本試行）では、知乎・CSDN・萌娘百科・Tistory・Postype は `fetch.py` 単体で落ちた一方、站酷・網易・大学 PDF・GitHub ブログ・Paintingstack・CLIP STUDIO・YouTube 字幕は素通りした。ログイン必須の SNS や有料データベースは境界どおり回避せず、ログイン不要の別置き場を探すか、URL を並べてユーザーへ渡す。
 
 ---
 

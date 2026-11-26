@@ -1037,6 +1037,51 @@ _YT_BLOCKED_LANGS = frozenset({"all", "live_chat"})
 _YT_SPOKEN_FORM = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,4})*")
 
 
+# 動画の字幕の言語キー（subtitles・automatic_captions のキー）として --sub-langs に渡せる形。
+# キーは動画の持ち主が決めるため、「,」や正規表現の記号を含むもの・先頭が「-」のものは通さない
+# （yt-dlp は先頭の「-」を「その言語を除く」の指定に読む）。ko・zh-Hans・pt-BR・es-419 の形に絞る
+_YT_LANG_TOKEN = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*")
+
+
+def _safe_yt_lang(key: str) -> bool:
+    """字幕の言語キーが、そのまま --sub-langs に渡して安全な言語タグか。「all」「live_chat」は除く。"""
+    return (_YT_LANG_TOKEN.fullmatch(key) is not None
+            and key.split("-")[0].lower() not in _YT_BLOCKED_LANGS)
+
+
+def _probe_youtube_sub_langs(url: str) -> tuple[str | None, str | None]:
+    """動画が実際に持つ字幕の言語を yt-dlp で調べ、(手動字幕の言語, 自動字幕の元の言語) を返す。
+
+    動画の言語（%(language)s）が空のとき、ja・en の指定だけでは韓国語や中国語の字幕を取り逃がし、
+    本文が 0 文字になった（実地のバグ）。字幕の一覧そのものを見れば、言語が空でも手動字幕（ko・zh-Hans）や
+    元の言語の自動字幕（ko-orig）を指名できる。
+    手動字幕は ja・en を除いた最初の安全なキー（ja・en は1回目で試行済み）。自動字幕は「-orig」で終わる
+    最初の安全なキー（翻訳された自動字幕を取ると 429 になる・youtube_to_md の docstring）。
+    調べられなかったとき（時間切れ・出力の崩れ）は (None, None)。
+    """
+    res = run_tool(
+        ["yt-dlp", "--no-update", "--no-playlist", "--skip-download", "--encoding", "utf-8",
+         "--print", "%(subtitles)j\t%(automatic_captions)j", "--", url],
+        capture_output=True, encoding="utf-8", errors="replace")
+    lines = res.stdout.splitlines() if res is not None and res.stdout else []
+    if not lines:
+        return None, None
+    parts = lines[0].split("\t", 1)
+
+    def keys(raw: str) -> list[str]:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return []  # "NA"（字幕の項目が無い動画）や崩れた出力
+        return [k for k in data if isinstance(k, str)] if isinstance(data, dict) else []
+
+    manual = keys(parts[0])
+    auto = keys(parts[1]) if len(parts) > 1 else []
+    manual_lang = next((k for k in manual if k.lower() not in ("ja", "en") and _safe_yt_lang(k)), None)
+    auto_orig = next((k for k in auto if k.lower().endswith("-orig") and _safe_yt_lang(k[:-5])), None)
+    return manual_lang, auto_orig
+
+
 def _youtube_manual_langs() -> str:
     """IMOZURU_YT_LANGS が有効な言語の並びならそれを、そうでなければ空文字を返す。"""
     val = os.environ.get("IMOZURU_YT_LANGS", "").strip()
@@ -1095,6 +1140,8 @@ def youtube_to_md(url: str, out: Path) -> str:
     無ければ ja,en。ja,en に無く、動画の元の言語が中国語・韓国語などのときは、自動字幕へ落ちる前に
     その言語の手動字幕を1回だけ試す（zh-Hans のようにサブタグがあれば zh-Hans,zh）。
     複数の字幕が取れたときの優先は、環境変数の並び → 元の言語（完全なタグ・基底の言語）→ 日本語 → 英語の順。
+    動画の言語が空のときは、ja,en で取れなかった場合に限り、字幕の一覧を1回だけ調べる（_probe_youtube_sub_langs）。
+    手動字幕（ko・zh-Hans など）があれば自動字幕へ落ちる前にそれを取り、無ければ自動字幕は一覧の元の言語（ko-orig など）を指名する。
 
     自動字幕は誤変換が多い（大陸塗りの試行で「線画」が「洗画」）。どちらを使ったかを
     見出しに残し、読み手が引用を動画で確かめるべきか分かるようにする。手動と自動は
@@ -1115,6 +1162,7 @@ def youtube_to_md(url: str, out: Path) -> str:
     printed = ""
     spoken = ""
     base = ""
+    manual_lang = ""  # 字幕の一覧から見つけた手動字幕の言語（動画の言語が空のとき）
 
     def fetch_subs(flag: str, langs: str) -> subprocess.CompletedProcess | None:
         return run_tool(
@@ -1140,11 +1188,21 @@ def youtube_to_md(url: str, out: Path) -> str:
                 meta = fetch_subs("--write-subs", spoken if spoken.lower() == base else f"{spoken},{base}")
                 if meta is not None:
                     printed = meta.stdout or printed
+            # 動画の言語が空（実地では ko・zh-Hans の動画で起きた）だと、上の1回目は ja,en の指定だけで 0 文字になる。
+            # 字幕の一覧を1回だけ調べ、手動字幕があれば自動字幕へ落ちる前に試行し、自動字幕は元の言語（-orig）を指名する
+            probed_auto: str | None = None
+            if meta is not None and not spoken and not manual_langs and not any(tmp.glob("*.vtt")):
+                probed_manual, probed_auto = _probe_youtube_sub_langs(url)
+                if probed_manual:
+                    manual_lang = probed_manual
+                    meta = fetch_subs("--write-subs", probed_manual)
+                    if meta is not None:
+                        printed = meta.stdout or printed
             if meta is not None and not any(tmp.glob("*.vtt")):
                 kind = "自動（誤変換あり・引用は動画で確かめる）"
                 # 完全なタグの -orig（zh-Hans-orig）も依頼する。ja・en は地域つき（en-US）でも字幕は en-orig のため、基底だけにする
                 if not spoken:
-                    auto_langs = "ja-orig,en-orig"
+                    auto_langs = probed_auto or "ja-orig,en-orig"
                 elif spoken.lower() == base or base in ("ja", "en"):
                     auto_langs = f"{base}-orig"
                 else:
@@ -1154,7 +1212,8 @@ def youtube_to_md(url: str, out: Path) -> str:
                     printed = meta.stdout or printed
     # 環境変数で言語を指定したときはその並びを最優先にする。指定が無ければ、動画の元の言語の字幕を最優先にし、
     # 次に日本語・英語、残りはファイル名順
-    ordered = [*manual_langs.split(","), spoken, base, "ja", "en"] if manual_langs else [spoken, base, "ja", "en"]
+    ordered = ([*manual_langs.split(","), spoken, base, "ja", "en"] if manual_langs
+               else [spoken, base, manual_lang, "ja", "en"])
     vtts = _vtt_order([p for p in tmp.glob("*.vtt") if p.stat().st_size <= MAX_BYTES], ordered)
     lines, last = [], ""
     if vtts:
