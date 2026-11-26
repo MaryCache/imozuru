@@ -10,6 +10,19 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+## [2.3.2] - 2026-11-26
+
+### 修正
+
+- `fetch.py` で `Content-Encoding: gzip`（またはテキスト系レスポンスへの誤配信 gzip）を展開せず文字化けのまま `OK` にしていた不具合を修正しました。`MAX_BYTES` 上限付きの安全な展開（gzip bomb 対策）を行い、壊れた gzip は失敗として扱います。
+- `fetch.py` に `hal.science`（および `*.hal.science`）の記録ページがボット確認・壁・短すぎ等で失敗したときの `/document`（PDF 直取り）自動フォールバックを追加しました（`--no-fallback` で無効化、`fetch-log.jsonl` に `via="hal-document"` を記録）。
+- `fetch.py` の確認画面判定（`CHALLENGE_PATTERNS`）に OpenEdition や Heidelberg 等の Anubis ボット対策固有の文言を追加しました。
+
+### 変更
+
+- `SKILL.md` と `references/multilingual.md` で、掘る言語圏の選定を親の勘まかせにせず、0周目の論点1（媒体・言語圏）の証拠（多言語版 Wikipedia の脚注の厚さ・著者所属・引用元言語の分布）から決める手順を明記しました。
+- `references/multilingual.md` の媒体表に 6 言語圏（計 197 本試行）の実測ノウハウ（HAL `/document`、archive.org `_djvu.txt`、CyberLeninka、Anubis サイト、ドメイン指定検索）を反映しました。
+
 ## [2.3.1] - 2026-11-26
 
 ### 修正
@@ -177,7 +190,8 @@ AIの判断能力は形式知・ノウハウを収集することで強化され
 - 検索結果から来るURL・本文・フィードを、他人が細工したものとして扱う。
 - 文字の層が無いPDFのOCRで、言語データから言語を選び、意味をなさない読み取りを失敗として扱う（#11）。
 
-[未公開]: https://github.com/MaryCache/imozuru/compare/v2.3.1...dev
+[未公開]: https://github.com/MaryCache/imozuru/compare/v2.3.2...dev
+[2.3.2]: https://github.com/MaryCache/imozuru/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/MaryCache/imozuru/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/MaryCache/imozuru/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/MaryCache/imozuru/compare/v2.2.0...v2.2.1
