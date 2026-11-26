@@ -492,6 +492,23 @@ class SecondRoundTests(unittest.TestCase):
             self.assertIsNotNone(fetch.url_problem("file:///etc/passwd"))  # http(s) の検査は残る
         self.assertIn("IMOZURU_ALLOW_PRIVATE", fetch.url_problem("http://127.0.0.1:8080/"))
 
+    def test_fake_ip_opt_in(self):
+        # fake-IP の DNS は全ホスト名を 198.18.0.0/15 に引く。opt-in のときだけその範囲を通す
+        for module in (fetch, watch):
+            with self.subTest(module=module.__name__), \
+                    patch.object(module, "resolve", lambda host: {"198.18.0.7"}):
+                self.assertIsNotNone(module.url_problem("https://example.test/"))
+                with patch.dict(os.environ, {"IMOZURU_ALLOW_FAKE_IP": "1"}):
+                    self.assertIsNone(module.url_problem("https://example.test/"))
+        # opt-in しても LAN は引き続き止まる（全部外す ALLOW_PRIVATE とは別）
+        with patch.dict(os.environ, {"IMOZURU_ALLOW_FAKE_IP": "1"}):
+            for module in (fetch, watch):
+                with self.subTest(module=module.__name__, addr="lan"), \
+                        patch.object(module, "resolve", lambda host: {"192.168.0.7"}):
+                    self.assertIsNotNone(module.url_problem("https://example.test/"))
+        with patch.object(fetch, "resolve", lambda host: {"198.18.0.7"}):
+            self.assertIn("IMOZURU_ALLOW_FAKE_IP", fetch.url_problem("https://example.test/"))
+
     def test_fail_line_has_no_control_characters(self):
         err = fetch.UnsafeURL("転送先 http://127.0.0.1/\x1b]52;c;ZXZpbA==\x07\tEXTRA\nFAKE")
         with tempfile.TemporaryDirectory() as tmp, patch.object(fetch, "resolve", lambda host: {PUBLIC_IP}), \
