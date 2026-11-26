@@ -10,6 +10,13 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+## [2.3.1] - 2026-11-26
+
+### 修正
+
+- `fetch.py` で、動画メタデータの言語（`language`）が空の YouTube 動画に手動字幕（韓国語・中国語など）や元の言語の自動字幕（`-orig`）が存在しても取り逃がしていた不具合を修正しました。`IMOZURU_YT_LANGS` 未指定かつ 1 回目で字幕が取れず言語が空のとき、`yt-dlp` から実際の字幕一覧を調べて安全な手動字幕・`-orig` 自動字幕へフォールバックします（`all`・`live_chat`・不正なキーは除外）。
+- `skills/imozuru/references/multilingual.md` の言語圏ごとの媒体表を実測結果に合わせて更新し、`fetch.py` でそのまま取得しやすい媒体と、ボット対策・JS 描画・ログイン壁によりブラウザ取得や `ingest.py` が前提になる媒体を分けました。
+
 ## [2.3.0] - 2026-11-26
 
 ### 追加
@@ -170,7 +177,8 @@ AIの判断能力は形式知・ノウハウを収集することで強化され
 - 検索結果から来るURL・本文・フィードを、他人が細工したものとして扱う。
 - 文字の層が無いPDFのOCRで、言語データから言語を選び、意味をなさない読み取りを失敗として扱う（#11）。
 
-[未公開]: https://github.com/MaryCache/imozuru/compare/v2.3.0...dev
+[未公開]: https://github.com/MaryCache/imozuru/compare/v2.3.1...dev
+[2.3.1]: https://github.com/MaryCache/imozuru/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/MaryCache/imozuru/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/MaryCache/imozuru/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/MaryCache/imozuru/compare/v2.1.0...v2.2.0
