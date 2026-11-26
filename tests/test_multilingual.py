@@ -6,7 +6,9 @@
 """
 
 import codecs
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -14,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -932,6 +935,304 @@ class DashboardFoldTests(unittest.TestCase):
         # SIDE_JS は CSP のハッシュで許すため、中身を変えても整合する。結合アクセントそのものの字は入れない
         self.assertIn("/[\\u0300-\\u036f]/g", dash.SIDE_JS)
         self.assertNotIn("̀", dash.SIDE_JS)
+
+
+class _FakeResponse:
+    """urllib の応答の代役。ヘッダーは辞書で渡す。"""
+
+    def __init__(self, body: bytes, headers: dict[str, str]):
+        self._body = body
+        self.headers = headers
+        self.length = 0
+
+    def read(self, n: int = -1) -> bytes:
+        return self._body if n < 0 else self._body[:n]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _gzip(data: bytes) -> bytes:
+    import gzip
+    return gzip.compress(data)
+
+
+class GzipDownloadTests(unittest.TestCase):
+    """Content-Encoding: gzip の本体を展開し、gzip bomb と壊れた本体は取得ごと失敗にする。"""
+
+    HTML = ("<html><body><p>日本語の記事の本文です。" * 80 + "</p></body></html>").encode("utf-8")
+
+    def download(self, body: bytes, headers: dict[str, str], *, max_bytes: int | None = None):
+        res = _FakeResponse(body, headers)
+        patches = [patch.object(fetch, "url_problem", return_value=None),
+                   patch.object(fetch._OPENER, "open", return_value=res)]
+        if max_bytes is not None:
+            patches.append(patch.object(fetch, "MAX_BYTES", max_bytes))
+        with contextlib_exit_stack(patches):
+            return fetch.download("https://example.test/a")
+
+    def test_gzip_html_is_decoded_without_mojibake(self):
+        body, ctype = self.download(_gzip(self.HTML),
+                                    {"Content-Type": "text/html; charset=utf-8", "Content-Encoding": "gzip"})
+        self.assertEqual(body, self.HTML)
+        self.assertEqual(fetch.decode_text(body, ctype), self.HTML.decode("utf-8"))
+
+    def test_encoding_header_is_case_insensitive_and_accepts_x_gzip_in_a_list(self):
+        for value in ("GZIP", "x-gzip", "identity, gzip"):
+            with self.subTest(value=value):
+                body, _ = self.download(_gzip(self.HTML), {"Content-Type": "text/html", "Content-Encoding": value})
+                self.assertEqual(body, self.HTML)
+
+    def test_misdelivered_gzip_without_header_is_decoded_for_text_types(self):
+        body, _ = self.download(_gzip(self.HTML), {"Content-Type": "text/html; charset=utf-8"})
+        self.assertEqual(body, self.HTML)
+
+    def test_misdelivered_gzip_that_is_broken_fails(self):
+        with self.assertRaises(ValueError):
+            self.download(b"\x1f\x8b" + b"not really gzip", {"Content-Type": "text/html"})
+
+    def test_binary_types_without_header_are_left_alone(self):
+        # 型が PDF などのバイナリなら、先頭が gzip のマジックバイトでも触らない
+        raw = _gzip(b"x" * 100)
+        body, _ = self.download(raw, {"Content-Type": "application/pdf"})
+        self.assertEqual(body, raw)
+
+    def test_plain_body_is_unchanged(self):
+        body, _ = self.download(self.HTML, {"Content-Type": "text/html"})
+        self.assertEqual(body, self.HTML)
+
+    def test_gzip_bomb_is_rejected(self):
+        # 圧縮後は小さく、展開後は上限を超える。上限を小さくして、膨らむ前に読むのをやめることを見る
+        bomb = _gzip(b"\0" * 100_000)
+        self.assertLess(len(bomb), 1_000)
+        with self.assertRaises(ValueError) as cm:
+            self.download(bomb, {"Content-Type": "text/html", "Content-Encoding": "gzip"}, max_bytes=10_000)
+        self.assertIn("バイトを超える", str(cm.exception))
+
+    def test_bounded_decompression_reads_at_most_one_byte_past_the_limit(self):
+        self.assertEqual(fetch._decompress_gzip_bounded(_gzip(b"a" * 10), 10), b"a" * 10)
+        with self.assertRaises(ValueError):
+            fetch._decompress_gzip_bounded(_gzip(b"a" * 11), 10)
+
+    def test_broken_gzip_never_becomes_a_body(self):
+        broken_cases = {
+            "header only": b"\x1f\x8b\x08\x00",
+            "truncated": _gzip(self.HTML)[:-12],
+            "corrupted": _gzip(self.HTML)[:20] + b"\xff" * 30 + _gzip(self.HTML)[50:],
+        }
+        for label, raw in broken_cases.items():
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError) as cm:
+                    self.download(raw, {"Content-Type": "text/html", "Content-Encoding": "gzip"})
+                self.assertIn("gzip の展開に失敗した", str(cm.exception))
+
+    def test_broken_gzip_is_a_fail_not_an_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work, dest = Path(tmp, "work"), Path(tmp, "sources")
+            work.mkdir()
+            dest.mkdir()
+            res = _FakeResponse(b"\x1f\x8b\x08\x00broken", {"Content-Type": "text/html", "Content-Encoding": "gzip"})
+            out = io.StringIO()
+            with patch.object(fetch, "url_problem", return_value=None), \
+                    patch.object(fetch._OPENER, "open", return_value=res), \
+                    contextlib.redirect_stdout(out):
+                code = fetch.fetch_source(work, "paper", "https://example.test/a", dest)
+        self.assertEqual(code, 1)
+        self.assertTrue(out.getvalue().startswith("FAIL\tpaper\t"))
+        self.assertIn("gzip の展開に失敗した", out.getvalue())
+        self.assertNotIn("OK\t", out.getvalue())
+
+
+def contextlib_exit_stack(patches):
+    """複数の patch を1つの with で開く。"""
+    stack = contextlib.ExitStack()
+    for p in patches:
+        stack.enter_context(p)
+    return stack
+
+
+ANUBIS_PAGE = (
+    "<html><head><title>Making sure you're not a bot!</title></head><body>"
+    "<h1 id='title'>Making sure you're not a bot!</h1>"
+    "<p>Loading...</p><p>Please wait a moment while we ensure the security of your connection.</p>"
+    "<p>Protected by <a href='https://anubis.techaro.lol'>Anubis</a> from Techaro.</p>"
+    "<p>Why am I seeing this? You are seeing this because the administrator of this website "
+    "has set up Anubis to protect the server against the scourge of AI companies aggressively scraping websites.</p>"
+    "</body></html>"
+)
+
+# 記事の本文として足りる長さの PDF の文字（HAL の /document が返す想定）
+HAL_PDF_TEXT = "Résumé de l'article. " + "Les résultats de la recherche sont stables. " * 150
+
+
+def _fake_pdf_to_text(pdf: Path) -> str:
+    """pdftotext の代役。本物と同じく、文字を隣の .txt にも出力する。"""
+    pdf.with_suffix(".txt").write_text(HAL_PDF_TEXT, encoding="utf-8")
+    return HAL_PDF_TEXT
+
+
+class AnubisWallTests(unittest.TestCase):
+    """Anubis のボット確認ページは、字数が足りていても壁と判定する。"""
+
+    def test_anubis_text_is_a_wall_even_when_long_enough(self):
+        text = "Making sure you're not a bot!\n" + "Loading... " * 200
+        self.assertGreaterEqual(len(text), fetch.MIN_HTML_CHARS)
+        kind, reason = fetch.content_problem(text, is_pdf=False)
+        self.assertEqual(kind, "wall")
+        self.assertIn("壁に当たった", reason)
+
+    def test_each_anubis_phrase_is_a_wall(self):
+        for phrase in ("Making sure you’re not a bot!", "Protected by Anubis from Techaro.",
+                       "the administrator of this website has set up Anubis to protect the server"):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(fetch.content_problem(phrase + "\n" + "あ" * 1500, is_pdf=False)[0], "wall")
+
+    def test_page_that_only_mentions_anubis_is_not_a_wall(self):
+        # 神の名や記事の題材としての「Anubis」だけでは壁にしない
+        body = "古代エジプトの神 Anubis は、死者の守り手として描かれた。" * 120
+        self.assertEqual(fetch.content_problem(body, is_pdf=False), (None, None))
+
+    def test_anubis_html_is_reported_as_a_wall_not_as_too_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work, dest = Path(tmp, "work"), Path(tmp, "sources")
+            work.mkdir()
+            dest.mkdir()
+            res = _FakeResponse(ANUBIS_PAGE.encode("utf-8"), {"Content-Type": "text/html; charset=utf-8"})
+            out = io.StringIO()
+            with patch.object(fetch, "url_problem", return_value=None), \
+                    patch.object(fetch._OPENER, "open", return_value=res), \
+                    contextlib.redirect_stdout(out):
+                code = fetch.fetch_source(work, "oe", "https://journals.openedition.org/x/123", dest)
+        self.assertEqual(code, 1)
+        self.assertIn("壁に当たった", out.getvalue())
+        self.assertNotIn("短すぎる", out.getvalue())
+
+
+class HalDocumentUrlTests(unittest.TestCase):
+    def test_record_pages_get_a_document_url(self):
+        cases = {
+            "https://hal.science/hal-01234567": "https://hal.science/hal-01234567/document",
+            "https://hal.science/hal-01234567v2/": "https://hal.science/hal-01234567v2/document",
+            "https://inria.hal.science/inria-00123456": "https://inria.hal.science/inria-00123456/document",
+            "https://hal.science/tel-01234567?lang=en#x": "https://hal.science/tel-01234567/document",
+            "HTTP://HAL.SCIENCE/hal-01234567": "https://hal.science/hal-01234567/document",
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(fetch._hal_document_url(url), expected)
+
+    def test_other_urls_get_none(self):
+        for url in ("https://hal.science/", "https://hal.science/hal-01234567/document",
+                    "https://hal.science/hal-01234567/file/paper.pdf", "https://hal.science/hal-01234567.pdf",
+                    "https://hal.science/search/index?q=x", "https://example.com/hal-01234567",
+                    "https://evilhal.science/hal-01234567", "https://hal.science.evil.test/hal-01234567",
+                    "https://hal.science:8443/hal-01234567", "https://user@hal.science/hal-01234567",
+                    "ftp://hal.science/hal-01234567", "file:///hal-01234567", "not a url", ""):
+            with self.subTest(url=url):
+                self.assertIsNone(fetch._hal_document_url(url))
+
+
+class HalFallbackTests(unittest.TestCase):
+    """HAL の記録ページがボット確認で落ちたとき、/document の PDF へ取り直す。"""
+
+    RECORD = "https://hal.science/hal-01234567"
+    DOCUMENT = "https://hal.science/hal-01234567/document"
+
+    def run_main(self, tmp: str, extra_args: list[str], pages: dict[str, tuple[bytes, str]]):
+        sources = Path(tmp, "topic", "sources")
+        calls: list[str] = []
+
+        def fake_download(url, user_agent=fetch.BROWSER_UA):
+            calls.append(url)
+            if url not in pages:
+                raise OSError("想定外の取得")
+            return pages[url]
+
+        out = io.StringIO()
+        argv = ["fetch.py", str(sources), "hal", self.RECORD, *extra_args]
+        with patch.object(sys, "argv", argv), \
+                patch.object(fetch, "url_problem", return_value=None), \
+                patch.object(fetch, "download", side_effect=fake_download), \
+                patch.object(fetch, "pdf_to_text", side_effect=_fake_pdf_to_text), \
+                patch.object(fetch, "HAS_AX", False), \
+                contextlib.redirect_stdout(out):
+            code = fetch.main()
+        log_path = sources.parent / "fetch-log.jsonl"
+        log = [json.loads(l) for l in log_path.read_text(encoding="utf-8").splitlines()] if log_path.exists() else []
+        return code, out.getvalue(), calls, log, sources
+
+    def pages(self) -> dict[str, tuple[bytes, str]]:
+        return {
+            self.RECORD: (ANUBIS_PAGE.encode("utf-8"), "text/html; charset=utf-8"),
+            self.DOCUMENT: (b"%PDF-1.5 fake", "application/pdf"),
+        }
+
+    def test_blocked_record_falls_back_to_document_pdf_and_logs_via(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, calls, log, sources = self.run_main(tmp, [], self.pages())
+            self.assertEqual(code, 0, out)
+            self.assertTrue(out.startswith("OK\thal\t"), out)
+            self.assertIn(self.DOCUMENT, calls)
+            self.assertTrue((sources / "hal.pdf").exists())
+            self.assertFalse((sources / "hal.md").exists())
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["status"], "OK")
+        self.assertEqual(log[0]["via"], "hal-document")
+        self.assertEqual(log[0]["resolved_url"], self.DOCUMENT)
+        self.assertEqual(log[0]["url"], self.RECORD)
+
+    def test_no_fallback_never_tries_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, calls, log, sources = self.run_main(tmp, ["--no-fallback"], self.pages())
+            self.assertEqual(code, 1)
+            self.assertTrue(out.startswith("FAIL\thal\t"), out)
+            self.assertNotIn(self.DOCUMENT, calls)
+            self.assertFalse((sources / "hal.pdf").exists())
+        self.assertEqual(log[0]["status"], "FAIL")
+        self.assertNotIn("via", log[0])
+
+    def test_http_error_other_than_404_also_falls_back(self):
+        def forbidden(url, user_agent=fetch.BROWSER_UA):
+            if url == self.RECORD:
+                raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+            return b"%PDF-1.5 fake", "application/pdf"
+
+        self.assertEqual(self.fallback_result(forbidden)[0], 0)
+
+    def test_404_does_not_fall_back(self):
+        def missing(url, user_agent=fetch.BROWSER_UA):
+            if url == self.RECORD:
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            raise AssertionError(f"404 のあとに {url} を取りに行った")
+
+        code, out = self.fallback_result(missing)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL\thal\t", out)
+
+    def test_document_that_is_not_a_pdf_leaves_the_original_failure(self):
+        pages = self.pages()
+        pages[self.DOCUMENT] = (ANUBIS_PAGE.encode("utf-8"), "text/html")
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, _, log, _ = self.run_main(tmp, [], pages)
+        self.assertEqual(code, 1)
+        self.assertIn("壁に当たった", out)
+        self.assertNotIn("via", log[0])
+
+    def fallback_result(self, fake_download) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            work, dest = Path(tmp, "work"), Path(tmp, "sources")
+            work.mkdir()
+            dest.mkdir()
+            out = io.StringIO()
+            with patch.object(fetch, "url_problem", return_value=None), \
+                    patch.object(fetch, "download", side_effect=fake_download), \
+                    patch.object(fetch, "pdf_to_text", side_effect=_fake_pdf_to_text), \
+                    contextlib.redirect_stdout(out):
+                code = fetch.fetch_source(work, "hal", self.RECORD, dest)
+        return code, out.getvalue()
 
 
 if __name__ == "__main__":

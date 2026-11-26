@@ -21,6 +21,7 @@ import codecs
 import contextlib
 import email.utils
 import functools
+import gzip
 import http.client
 import io
 import ipaddress
@@ -39,6 +40,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zlib
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -109,6 +111,12 @@ CHALLENGE_PATTERNS = (
     "enable javascript and cookies to continue",
     "attention required! | cloudflare",
     "しばらくお待ちください",
+    # Anubis のボット確認ページ（OpenEdition・Heidelberg など）。本文の語としては現れにくい、
+    # 画面の見出しとフッターの定型文だけを選ぶ。単体の「anubis」は神の名や記事の題材として本文に出るため使わない。
+    # 見出しは「'」と「’」の両方で出るため、どちらでも当たるようにする
+    "making sure you're not a bot", "making sure you’re not a bot",
+    "protected by anubis",
+    "has set up anubis to protect",
     # Cloudflare などの確認画面の各国語版
     "确认您是真人", "確認您是真人", "请完成安全验证", "請完成安全驗證",
     "bestätigen sie, dass sie ein mensch sind",
@@ -456,6 +464,35 @@ def _is_retryable_url_error(err: Exception) -> bool:
 
 _LAST_RETRIED = 0
 
+# 中身が gzip なのに Content-Encoding を付け忘れる誤配信を検出する対象。PDF などのバイナリには触らない
+_GZIP_MISDELIVERY_TYPES = ("text/", "html", "xml", "json")
+
+
+def _decompress_gzip_bounded(raw: bytes, max_bytes: int = MAX_BYTES) -> bytes:
+    """gzip を展開する。展開後が max_bytes を超えるものと、壊れたものは ValueError にする。
+
+    圧縮したままの大きさは MAX_BYTES で見ているが、gzip は数十 KB が数 GB に膨らむ（gzip bomb）。
+    max_bytes + 1 バイトまでしか読まないため、膨らむ本体でもメモリを使い切らない。
+    壊れた gzip をそのまま返すと、化けた生バイトが文字化けの本文として OK になる。
+    """
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as gz:
+            out = gz.read(max_bytes + 1)
+    except (gzip.BadGzipFile, EOFError, OSError, zlib.error) as e:
+        raise ValueError("gzip の展開に失敗した") from e
+    if len(out) > max_bytes:
+        raise ValueError(f"展開後の本体が {max_bytes:,} バイトを超える")
+    return out
+
+
+def _needs_gzip_decode(headers, ctype: str, body: bytes) -> bool:
+    """本体を gzip として展開すべきか。Content-Encoding の宣言か、宣言の無い誤配信の兆候で決める。"""
+    tokens = {t.strip() for t in (headers.get("Content-Encoding", "") or "").lower().split(",")}
+    if tokens & {"gzip", "x-gzip"}:
+        return True
+    # 宣言が無くても先頭が gzip のマジックバイトで、型がテキスト系なら、サーバーの付け忘れとみて試す
+    return body[:2] == b"\x1f\x8b" and any(t in ctype.lower() for t in _GZIP_MISDELIVERY_TYPES)
+
 
 def _download_impl(
     url: str,
@@ -483,8 +520,12 @@ def _download_impl(
                     raise ValueError(f"本体が {MAX_BYTES:,} バイトを超える")
                 if isinstance(res.length, int) and res.length > 0:
                     raise ValueError("本体が途中で切れた")
+                ctype = res.headers.get("Content-Type", "")
+                if _needs_gzip_decode(res.headers, ctype, body):
+                    # 引数で MAX_BYTES を渡す（既定値は定義時に固定されるため）
+                    body = _decompress_gzip_bounded(body, MAX_BYTES)
                 _LAST_RETRIED = attempt
-                return body, res.headers.get("Content-Type", "")
+                return body, ctype
         except urllib.error.HTTPError as e:
             retry_after = _parse_retry_after(e.headers.get("Retry-After") if e.headers else None)
             if e.code not in RETRYABLE_HTTP_STATUS or attempt >= retries:
@@ -508,6 +549,7 @@ def download(url: str, user_agent: str = BROWSER_UA) -> tuple[bytes, str]:
     """URL を取りに行き、本体と Content-Type を返す。
 
     MAX_BYTES を超える本体や、Content-Length に届かずに切れた本体は、取得ごと失敗にする。
+    Content-Encoding が gzip の本体は展開してから返す（展開後も MAX_BYTES で見る）。
     切れた原文を OK として残すと、後ろの部分を引用できないのに「原文に無い」と読み違える。
     read(n) は接続が途中で切れても例外を出さないので、残りの長さ（res.length）で確かめる。
     HTTP 429/503/504 とタイムアウトだけ、期限と回数の上限内でジッター付き再試行する。
@@ -1633,6 +1675,76 @@ def content_problem(text: str, *, is_pdf: bool, short_ok: bool = False) -> tuple
     return None, None
 
 
+# HAL の記録ページのパス。ID は「ポータル名-数字」（hal-01234567・inria-00123456・tel-01234567）で、
+# バージョンは v2 のように付く。/file/ や /document を含むパスは記録ページではないため当てない
+_HAL_RECORD_PATH = re.compile(r"/[a-z][a-z0-9]*-\d{6,9}(?:v\d+)?/?", re.I)
+
+
+def _hal_document_url(url: str) -> str | None:
+    """HAL の記録ページの URL から、本文 PDF を返す /document の URL を作る。当てはまらなければ None。
+
+    記録ページがボット確認で落ちても、/document は PDF へ転送することが多い。
+    記録ページ以外（トップ・/document・.pdf・検索ページなど）に /document を追加すると別物を取るため、None にする。
+    """
+    try:
+        p = urllib.parse.urlsplit(url)
+        host = (p.hostname or "").lower()
+    except ValueError:
+        return None
+    if p.scheme.lower() not in {"http", "https"}:
+        return None
+    # ポートや認証情報つきの URL は作り直しで落ちる情報が出るため扱わない
+    if p.netloc.lower() != host:
+        return None
+    if host != "hal.science" and not host.endswith(".hal.science"):
+        return None
+    if not _HAL_RECORD_PATH.fullmatch(p.path):
+        return None
+    return f"https://{host}{p.path.rstrip('/')}/document"
+
+
+def _try_hal_document(
+    sources: Path,
+    name: str,
+    original_url: str,
+    destination: Path,
+    *,
+    meta: dict | None = None,
+) -> int | None:
+    """HAL の記録ページが取れなかったとき、/document の PDF を取り直し、検証に通れば保存する。"""
+    doc_url = _hal_document_url(original_url)
+    if doc_url is None or url_problem(doc_url):
+        return None
+    try:
+        body, _ = download(doc_url)
+    except Exception:
+        return None
+    if body[:5] != b"%PDF-":
+        return None
+    saved = sources / f"{name}.pdf"
+    kept = saved.with_suffix(".txt")
+    try:
+        saved.write_bytes(body)
+        text = pdf_to_text(saved)
+        if len(text.strip()) < 200:
+            text, _ = ocr_if_longer(saved, text)
+    except Exception:
+        for p in (saved, kept):
+            p.unlink(missing_ok=True)
+        return None
+    prob_kind, _ = content_problem(text, is_pdf=True)
+    if prob_kind is not None:
+        for p in (saved, kept):
+            p.unlink(missing_ok=True)
+        return None
+    final = save_verified(saved, kept, destination)
+    if meta is not None:
+        meta["via"] = "hal-document"
+        meta["resolved_url"] = doc_url
+    print(f"OK\t{name}\t{final}\t{len(text)}\t{first_line(text)}")
+    return 0
+
+
 def _try_oa_fallback(
     sources: Path,
     name: str,
@@ -1774,6 +1886,10 @@ def fetch_source(
     try:
         body, ctype = download(url)
     except Exception as e:  # HTTP エラーも接続失敗も、呼び手にとっては同じ「取れない」
+        # 404 はページが無いため /document も無い。壁や確認画面の 403 などのときだけ PDF を取り直す
+        not_found = isinstance(e, urllib.error.HTTPError) and e.code == 404
+        if allow_fallback and not not_found and _try_hal_document(sources, name, url, destination, meta=meta) == 0:
+            return 0
         if allow_fallback and doi:
             oa_res = _try_oa_fallback(sources, name, url, destination, doi=doi, meta=meta)
             if oa_res == 0:
@@ -1859,6 +1975,10 @@ def fetch_source(
             trial.unlink(missing_ok=True)
 
     prob_kind, _ = content_problem(text, is_pdf=saved.suffix == ".pdf")
+    if prob_kind is not None and allow_fallback and _try_hal_document(sources, name, url, destination, meta=meta) == 0:
+        for p in (saved, kept):
+            p.unlink(missing_ok=True)
+        return 0
     if prob_kind is not None and allow_fallback and doi:
         oa_res = _try_oa_fallback(sources, name, url, destination, doi=doi, meta=meta)
         if oa_res == 0:
