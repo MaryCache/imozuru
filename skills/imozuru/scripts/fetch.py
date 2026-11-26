@@ -204,7 +204,7 @@ def _pinned_connection(host: str, port: int, timeout, source_address):
     if os.environ.get("IMOZURU_ALLOW_PRIVATE") != "1":
         for addr in addrs:
             for ip in _addresses_inside(ipaddress.ip_address(addr.split("%", 1)[0])):
-                if not ip.is_global:
+                if _is_blocked_ip(ip):
                     raise UnsafeURL(f"つなぐ直前に引いた先が手元や内側の宛先（{ip}）だった")
     err = None
     full = _real_timeout(timeout)
@@ -287,6 +287,28 @@ def resolve(host: str) -> list[str]:
     return list(dict.fromkeys(info[4][0] for info in socket.getaddrinfo(host, None)))
 
 
+# fake-IP の DNS（Clash・Surge などの fake-ip プールや一部の egress プロキシ）が全ホスト名を
+# 198.18.0.0/15（RFC 2544 のベンチマーク用範囲）に解決する環境では、is_global が全部 False に
+# なり全 URL が止まってしまう。IMOZURU_ALLOW_FAKE_IP=1 のときだけこの範囲を外の宛先として扱い、
+# 127.0.0.1 や LAN などそれ以外の内側チェックは残す（全部外す IMOZURU_ALLOW_PRIVATE とは別）。
+FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _is_blocked_ip(ip) -> bool:
+    """取りに行ってはいけない宛先なら True。fake-IP の opt-in があれば 198.18.0.0/15 だけ通す。"""
+    if ip.is_global:
+        return False
+    if (os.environ.get("IMOZURU_ALLOW_FAKE_IP") == "1"
+            and ip.version == 4 and ip in FAKE_IP_NETWORK):
+        return False
+    return True
+
+
+def _blocked_hint(ip) -> str:
+    if ip.version == 4 and ip in FAKE_IP_NETWORK:
+        return "（fake-IP の DNS 環境なら IMOZURU_ALLOW_FAKE_IP=1 で 198.18.0.0/15 だけ外せる）"
+    return "（VPN などで外の名前も内側に引ける環境なら IMOZURU_ALLOW_PRIVATE=1 で外せる）"
+
 def url_problem(url: str) -> str | None:
     """取りに行ってはいけない URL なら理由を、よければ None を返す。
 
@@ -300,7 +322,8 @@ def url_problem(url: str) -> str | None:
 
     ホストの部分に「@」か「%」があれば断る。urlsplit は「x@a.example」の a.example を見るが、
     urllib は x@a.example をそのまま引き、「%61」は urllib だけが a に戻す。検査とつなぐ先がずれる。
-    VPN などで外の名前まで内側の宛先に引ける環境では、環境変数 IMOZURU_ALLOW_PRIVATE=1 で
+    fake-IP の DNS が全ホスト名を 198.18.0.0/15 に引く環境では、環境変数 IMOZURU_ALLOW_FAKE_IP=1 で
+    その範囲だけを外せる。VPN などで外の名前まで内側の宛先に引ける環境では、環境変数 IMOZURU_ALLOW_PRIVATE=1 で
     宛先の検査だけを外せる（http(s) の検査は残る）。
     """
     try:
@@ -336,9 +359,9 @@ def url_problem(url: str) -> str | None:
         return f"ホストを引けない（{e}）"
     for addr in addrs:
         for ip in _addresses_inside(ipaddress.ip_address(addr.split("%", 1)[0])):  # IPv6 の %eth0 を外す
-            if not ip.is_global:
+            if _is_blocked_ip(ip):
                 return (f"手元や内側の宛先（{ip}）には取りに行かない"
-                        "（VPN などで外の名前も内側に引ける環境なら IMOZURU_ALLOW_PRIVATE=1 で外せる）")
+                        + _blocked_hint(ip))
     return None
 
 
