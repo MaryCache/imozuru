@@ -10,6 +10,13 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+## [2.3.3] - 2026-11-26
+
+### 変更
+
+- `skills/imozuru/SKILL.md` の「検索役のサブエージェント」節を、Claude Code 以外の環境（Antigravity の `invoke_subagent` / `define_subagent`、Codex CLI の `spawn_agent` 等）でもサブエージェントを確実に起動できるよう整理しました。軽量モデルや読み取り専用定義が無いだけで単体検索へフォールバックしない条件と、Web 検索できる型を使う場合の境界を明記しています（#23・#24 での報告への対応）。
+- `skills/imozuru/SKILL.md`・`skills/imozuru/references/`（5本）・`README.md` の自然言語文全体を見直し、Markdown 太字の描画崩れ、主述のねじれ、曖昧な指し先、過度な長文・太字ラベル、用語の揺れを改善しました（安全ルール・境界・コマンド引数・仕様・出典は据え置き）。
+
 ## [2.3.2] - 2026-11-26
 
 ### 修正
@@ -190,7 +197,8 @@ AIの判断能力は形式知・ノウハウを収集することで強化され
 - 検索結果から来るURL・本文・フィードを、他人が細工したものとして扱う。
 - 文字の層が無いPDFのOCRで、言語データから言語を選び、意味をなさない読み取りを失敗として扱う（#11）。
 
-[未公開]: https://github.com/MaryCache/imozuru/compare/v2.3.2...dev
+[未公開]: https://github.com/MaryCache/imozuru/compare/v2.3.3...dev
+[2.3.3]: https://github.com/MaryCache/imozuru/compare/v2.3.2...v2.3.3
 [2.3.2]: https://github.com/MaryCache/imozuru/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/MaryCache/imozuru/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/MaryCache/imozuru/compare/v2.2.1...v2.3.0
