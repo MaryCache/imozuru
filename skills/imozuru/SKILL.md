@@ -12,6 +12,7 @@ description: |
   "dig into this field", "find the canonical papers on X", "literature dive", "what's new in X this week"。
   以下には使用しない: 答えが1つの事実の確認（年・有無だけ・仕様1つ → そのまま検索）／
   手元の PC の中の資料を探す／読んだ資料の要約や解説を書く。
+license: MIT
 ---
 
 # imozuru
