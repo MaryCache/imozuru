@@ -10,6 +10,12 @@ imozuruのバージョンごとの変更を記録します。
 
 ## [未公開]
 
+## [2.3.4] - 2026-11-27
+
+### 追加
+
+- `skills/imozuru/LICENSE` に MIT License を同梱し、`SKILL.md` の frontmatter に `license: MIT` を追加しました。APM や手動で `skills/imozuru/` だけをコピーしたときも、ライセンス文が一緒に配布されるようにします。
+
 ## [2.3.3] - 2026-11-26
 
 ### 変更

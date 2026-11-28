@@ -40,6 +40,19 @@ fetch._dial = watch._dial = lambda ip, port, timeout, src: _socket.create_connec
     ("127.0.0.1" if ip == "93.184.215.14" else ip, port), timeout, src)
 
 
+class PackagingTests(unittest.TestCase):
+    def test_skill_directory_contains_license(self):
+        text = (ROOT / "skills/imozuru/LICENSE").read_text(encoding="utf-8")
+        self.assertIn("MIT License", text)
+        self.assertIn("Copyright (c) 2026 MaryCache", text)
+
+    def test_skill_frontmatter_declares_license(self):
+        lines = (ROOT / "skills/imozuru/SKILL.md").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0], "---")
+        end = lines[1:].index("---") + 1
+        self.assertIn("license: MIT", lines[1:end])
+
+
 class EncodingTests(unittest.TestCase):
     def test_text_io_names_its_encoding(self):
         """encoding を省くと Windows では cp932 で読み書きして落ちる。省いた呼び出しを1つも残さない。"""
